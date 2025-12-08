@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/Gelotto/power-node/internal/client"
@@ -60,7 +62,11 @@ func (w *Worker) Start(ctx context.Context) error {
 	}
 
 	log.Printf("Using credentials - Worker ID: %s", w.id)
-	log.Printf("API Key: %s...", w.config.API.Key[:12])
+	keyPreview := w.config.API.Key
+	if len(keyPreview) > 12 {
+		keyPreview = keyPreview[:12] + "..."
+	}
+	log.Printf("API Key: %s", keyPreview)
 
 	log.Println("Starting Python inference service...")
 
@@ -205,7 +211,19 @@ func (w *Worker) Stop() error {
 	return nil
 }
 
-// detectGPU attempts to detect GPU information
+// detectGPU attempts to detect GPU information using nvidia-smi
 func (w *Worker) detectGPU() string {
-	return "GPU detection not implemented"
+	out, err := exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader").Output()
+	if err != nil {
+		return "Unknown GPU"
+	}
+	gpu := strings.TrimSpace(string(out))
+	if gpu == "" {
+		return "Unknown GPU"
+	}
+	// Return first GPU if multiple
+	if idx := strings.Index(gpu, "\n"); idx > 0 {
+		gpu = gpu[:idx]
+	}
+	return gpu
 }

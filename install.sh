@@ -187,7 +187,19 @@ download_file() {
     fi
 
     echo "  Downloading $name..."
-    curl -L "$url" -o "$dest" --progress-bar
+    if ! curl -L "$url" -o "$dest" --progress-bar --fail; then
+        echo -e "${RED}ERROR: Failed to download $name${NC}"
+        echo "  URL: $url"
+        rm -f "$dest"
+        exit 1
+    fi
+
+    # Verify file was downloaded
+    if [ ! -s "$dest" ]; then
+        echo -e "${RED}ERROR: Downloaded file is empty: $name${NC}"
+        rm -f "$dest"
+        exit 1
+    fi
 }
 
 if [ "$SERVICE_MODE" = "gguf" ]; then
@@ -215,6 +227,37 @@ if [ "$SERVICE_MODE" = "gguf" ]; then
     DIFFUSION_PATH="$INSTALL_DIR/models/diffusion/z_image_turbo-${QUANT}.gguf"
     VAE_PATH="$INSTALL_DIR/models/vae/ae.safetensors"
     TEXT_ENCODER_PATH="$INSTALL_DIR/models/text_encoder/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+else
+    # PyTorch mode - download full model via huggingface-cli
+    echo "  Downloading Z-Image-Turbo model (PyTorch, ~31GB)..."
+    echo "  This may take a while on slower connections..."
+
+    MODEL_DIR="$INSTALL_DIR/models/z-image-turbo"
+    if [ -d "$MODEL_DIR" ] && [ -f "$MODEL_DIR/model_index.json" ]; then
+        echo -e "  ${GREEN}✓${NC} Z-Image-Turbo (cached)"
+    else
+        source "$INSTALL_DIR/venv/bin/activate"
+        pip install huggingface_hub --quiet
+        python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download(
+    'Tongyi-MAI/Z-Image-Turbo',
+    local_dir='$MODEL_DIR',
+    local_dir_use_symlinks=False
+)
+"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}ERROR: Failed to download Z-Image-Turbo model${NC}"
+            exit 1
+        fi
+        deactivate
+    fi
+
+    # Also need VAE for PyTorch
+    download_file \
+        "$HF_BASE/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors" \
+        "$INSTALL_DIR/models/vae/ae.safetensors" \
+        "VAE (FLUX)"
 fi
 
 echo -e "${GREEN}  ✓ Models ready${NC}"
@@ -364,6 +407,122 @@ def main():
 if __name__ == "__main__":
     main()
 INFERENCE_EOF
+else
+# PyTorch inference script
+cat > "$INSTALL_DIR/scripts/inference.py" << 'INFERENCE_EOF'
+#!/usr/bin/env python3
+"""
+Power Node Inference Service (PyTorch/Z-Image-Turbo)
+For Blackwell GPUs (RTX 50-series) with 14GB+ VRAM
+"""
+
+import sys
+import json
+import base64
+import io
+import os
+import argparse
+import random
+import gc
+
+
+class InferenceService:
+    def __init__(self, model_path, vae_path=None):
+        self.model_path = model_path
+        self.vae_path = vae_path
+        self.pipe = None
+
+    def initialize(self):
+        import torch
+        from diffusers import FluxPipeline
+
+        sys.stderr.write("=== Power Node Inference Service (PyTorch) ===\n")
+        sys.stderr.write(f"Model: {self.model_path}\n")
+        sys.stderr.flush()
+
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Model not found: {self.model_path}")
+
+        sys.stderr.write("Loading model (this may take a minute)...\n")
+        sys.stderr.flush()
+
+        # Load with optimizations for 16GB VRAM
+        self.pipe = FluxPipeline.from_pretrained(
+            self.model_path,
+            torch_dtype=torch.bfloat16,
+        )
+
+        # Enable memory optimizations
+        self.pipe.enable_model_cpu_offload()
+
+        sys.stderr.write("Ready.\n")
+        sys.stderr.flush()
+
+    def generate(self, prompt, width=1024, height=1024, steps=8, seed=-1):
+        import torch
+
+        sys.stderr.write(f"Generating: {prompt[:50]}...\n")
+        sys.stderr.flush()
+
+        if seed == -1:
+            seed = random.randint(0, 2**31 - 1)
+
+        generator = torch.Generator("cuda").manual_seed(seed)
+
+        image = self.pipe(
+            prompt=prompt,
+            width=width,
+            height=height,
+            num_inference_steps=steps,
+            guidance_scale=3.5,
+            generator=generator,
+        ).images[0]
+
+        buf = io.BytesIO()
+        image.save(buf, format='PNG')
+
+        # Clear CUDA cache
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return {"image_data": base64.b64encode(buf.getvalue()).decode(), "format": "png"}
+
+    def handle_request(self, req):
+        try:
+            if req.get("method") == "generate":
+                return {"id": req.get("id", 0), "result": self.generate(**req.get("params", {})), "error": None}
+            return {"id": req.get("id", 0), "result": None, "error": f"Unknown method: {req.get('method')}"}
+        except Exception as e:
+            return {"id": req.get("id", 0), "result": None, "error": str(e)}
+
+    def run(self):
+        sys.stderr.write("Waiting for requests...\n")
+        sys.stderr.flush()
+        for line in sys.stdin:
+            if line.strip():
+                print(json.dumps(self.handle_request(json.loads(line))), flush=True)
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--model", "-m", required=True, help="Path to Z-Image-Turbo model directory")
+    p.add_argument("--vae", "-v", help="Path to VAE (optional)")
+    args = p.parse_args()
+
+    svc = InferenceService(args.model, args.vae)
+    try:
+        svc.initialize()
+        svc.run()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        sys.stderr.write(f"FATAL: {e}\n")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+INFERENCE_EOF
 fi
 
 chmod +x "$INSTALL_DIR/scripts/inference.py"
@@ -405,6 +564,37 @@ python:
     - "$VRAM_GB"
   env:
     PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+EOF
+else
+# PyTorch configuration
+cat > "$INSTALL_DIR/config/config.yaml" << EOF
+# Power Node Configuration (PyTorch Mode)
+# Register at https://gen.gelotto.io/workers/register to get your credentials
+
+api:
+  url: $API_URL
+  key: ""  # Your API key here
+
+model:
+  service_mode: pytorch
+  vram_gb: $VRAM_GB
+
+worker:
+  id: ""  # Your worker ID here
+  hostname: "$(hostname)"
+  gpu_info: "$GPU_NAME"
+  poll_interval: 5s
+  heartbeat_interval: 30s
+
+python:
+  executable: $INSTALL_DIR/venv/bin/python3
+  script_path: $INSTALL_DIR/scripts/inference.py
+  script_args:
+    - "--model"
+    - "$INSTALL_DIR/models/z-image-turbo"
+  env:
+    PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    HF_HOME: "$INSTALL_DIR/models/.cache"
 EOF
 fi
 
