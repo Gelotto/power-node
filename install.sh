@@ -163,9 +163,10 @@ if [ "$SERVICE_MODE" = "gguf" ]; then
     fi
     pip install pillow --quiet
 else
-    echo "  Installing PyTorch and dependencies..."
-    pip install torch torchvision --quiet
-    pip install transformers safetensors accelerate tqdm pillow --quiet
+    echo "  Installing PyTorch and dependencies for Blackwell GPU..."
+    # Blackwell GPUs (sm_120) require PyTorch nightly with CUDA 12.8+
+    pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128 --quiet
+    pip install transformers diffusers safetensors accelerate tqdm pillow --quiet
 fi
 
 deactivate
@@ -434,7 +435,7 @@ class InferenceService:
 
     def initialize(self):
         import torch
-        from diffusers import FluxPipeline
+        from diffusers import ZImagePipeline
 
         sys.stderr.write("=== Power Node Inference Service (PyTorch) ===\n")
         sys.stderr.write(f"Model: {self.model_path}\n")
@@ -446,8 +447,8 @@ class InferenceService:
         sys.stderr.write("Loading model (this may take a minute)...\n")
         sys.stderr.flush()
 
-        # Load with optimizations for 16GB VRAM
-        self.pipe = FluxPipeline.from_pretrained(
+        # Load Z-Image-Turbo pipeline with optimizations for 16GB VRAM
+        self.pipe = ZImagePipeline.from_pretrained(
             self.model_path,
             torch_dtype=torch.bfloat16,
         )
