@@ -1,0 +1,32 @@
+# Binaries
+bin/
+/power-node
+/power-node-*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Config with secrets
+config/config.yaml
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Models (too large)
+/models/
+*.gguf
+*.safetensors
