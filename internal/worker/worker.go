@@ -68,8 +68,9 @@ func (w *Worker) Start(ctx context.Context) error {
 		log.Printf("Detected GPU: %s", caps.String())
 	}
 
-	if w.config.NeedsRegistration() {
-		return fmt.Errorf("worker not registered. Please register at https://gen.gelotto.io/workers/register and add your credentials to config.yaml")
+	// Validate configuration before starting
+	if err := w.config.Validate(); err != nil {
+		return fmt.Errorf("%v\n\n  Please add your credentials to:\n  %s\n\n  Get your credentials at: https://gen.gelotto.io/workers/register", err, w.configPath)
 	}
 
 	log.Printf("Using credentials - Worker ID: %s", w.id)

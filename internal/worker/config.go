@@ -3,6 +3,7 @@ package worker
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -85,6 +86,26 @@ func LoadConfig(path string) (*Config, error) {
 // NeedsRegistration returns true if the worker needs to register
 func (c *Config) NeedsRegistration() bool {
 	return c.API.Key == "" || c.Worker.ID == ""
+}
+
+// Validate checks if the configuration is valid and returns detailed errors
+func (c *Config) Validate() error {
+	if c.API.Key == "" {
+		return fmt.Errorf("API key not configured")
+	}
+	if !strings.HasPrefix(c.API.Key, "wk_") {
+		return fmt.Errorf("invalid API key format (should start with 'wk_')")
+	}
+	if len(c.API.Key) != 67 {
+		return fmt.Errorf("invalid API key length (expected 67 characters, got %d)", len(c.API.Key))
+	}
+	if c.Worker.ID == "" {
+		return fmt.Errorf("worker ID not configured")
+	}
+	if c.API.URL == "" {
+		return fmt.Errorf("API URL not configured")
+	}
+	return nil
 }
 
 // SaveConfig saves the configuration back to a YAML file

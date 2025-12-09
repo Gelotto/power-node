@@ -16,8 +16,10 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+            artifact_arch: x86_64
           - goos: linux
             goarch: arm64
+            artifact_arch: arm64
 
     steps:
       - name: Checkout
@@ -34,13 +36,14 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          go build -ldflags="-s -w" -o power-node-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/power-node
+          VERSION=${GITHUB_REF#refs/tags/}
+          go build -ldflags="-s -w -X main.Version=$VERSION" -o power-node-${{ matrix.goos }}-${{ matrix.artifact_arch }} ./cmd/power-node
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: power-node-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: power-node-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: power-node-${{ matrix.goos }}-${{ matrix.artifact_arch }}
+          path: power-node-${{ matrix.goos }}-${{ matrix.artifact_arch }}
 
   release:
     needs: build

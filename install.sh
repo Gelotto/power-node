@@ -611,6 +611,85 @@ EOF
 chmod +x "$INSTALL_DIR/start.sh"
 
 # =============================================================================
+# Create Update Script
+# =============================================================================
+cat > "$INSTALL_DIR/update.sh" << 'UPDATEEOF'
+#!/bin/bash
+set -e
+
+INSTALL_DIR="$HOME/.power-node"
+GITHUB_REPO="Gelotto/power-node"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${YELLOW}Power Node Updater${NC}"
+echo ""
+
+# Check current version
+if [ -f "$INSTALL_DIR/bin/power-node" ]; then
+    CURRENT_VERSION=$("$INSTALL_DIR/bin/power-node" --version 2>/dev/null || echo "unknown")
+    echo -e "Current version: ${GREEN}$CURRENT_VERSION${NC}"
+else
+    echo -e "${RED}Power Node not installed. Run the installer first.${NC}"
+    exit 1
+fi
+
+# Stop service if running
+RESTART_SERVICE=false
+if systemctl is-active --quiet power-node 2>/dev/null; then
+    echo "Stopping power-node service..."
+    sudo systemctl stop power-node
+    RESTART_SERVICE=true
+fi
+
+# Download latest binary
+ARCH=$(uname -m)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+# Normalize architecture name
+if [ "$ARCH" = "x86_64" ]; then
+    ARCH="x86_64"
+elif [ "$ARCH" = "aarch64" ]; then
+    ARCH="arm64"
+fi
+
+BINARY_URL="https://github.com/$GITHUB_REPO/releases/latest/download/power-node-${OS}-${ARCH}"
+
+echo "Downloading latest binary..."
+if ! curl -sSL "$BINARY_URL" -o "$INSTALL_DIR/bin/power-node.new" --fail; then
+    echo -e "${RED}Failed to download update${NC}"
+    if [ "$RESTART_SERVICE" = true ]; then
+        sudo systemctl start power-node
+    fi
+    exit 1
+fi
+
+chmod +x "$INSTALL_DIR/bin/power-node.new"
+
+# Backup and swap binaries
+mv "$INSTALL_DIR/bin/power-node" "$INSTALL_DIR/bin/power-node.old"
+mv "$INSTALL_DIR/bin/power-node.new" "$INSTALL_DIR/bin/power-node"
+
+# Show new version
+NEW_VERSION=$("$INSTALL_DIR/bin/power-node" --version 2>/dev/null || echo "unknown")
+echo -e "Updated to: ${GREEN}$NEW_VERSION${NC}"
+
+# Restart service if it was running
+if [ "$RESTART_SERVICE" = true ]; then
+    echo "Restarting power-node service..."
+    sudo systemctl start power-node
+    echo -e "${GREEN}Service restarted!${NC}"
+fi
+
+echo ""
+echo -e "${GREEN}Update complete!${NC}"
+UPDATEEOF
+chmod +x "$INSTALL_DIR/update.sh"
+
+# =============================================================================
 # Create Systemd Service
 # =============================================================================
 cat > "$INSTALL_DIR/power-node.service" << EOF
@@ -655,5 +734,12 @@ echo "       id: \"YOUR_WORKER_ID\""
 echo ""
 echo "  3. Start the node:"
 echo "     $INSTALL_DIR/start.sh"
+echo ""
+echo -e "${CYAN}Useful commands:${NC}"
+echo ""
+echo "  Check status:   $INSTALL_DIR/bin/power-node --status"
+echo "  Validate setup: $INSTALL_DIR/bin/power-node --check"
+echo "  Update:         $INSTALL_DIR/update.sh"
+echo "  Show version:   $INSTALL_DIR/bin/power-node --version"
 echo ""
 echo -e "${GREEN}Happy computing!${NC}"
