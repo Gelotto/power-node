@@ -32,18 +32,46 @@ func (c *APIClient) SetAPIKey(apiKey string) {
 	c.apiKey = apiKey
 }
 
+// HeartbeatData contains optional capability data to send with heartbeat
+type HeartbeatData struct {
+	Hostname      string
+	GPUInfo       string
+	VRAM          *int
+	ComputeCap    string
+	ServiceMode   string
+	MaxResolution *int
+	MaxSteps      *int
+}
+
 // Heartbeat sends a heartbeat to the backend
-func (c *APIClient) Heartbeat(ctx context.Context, workerID, status, hostname, gpuInfo string) error {
-	reqBody := map[string]string{
+func (c *APIClient) Heartbeat(ctx context.Context, workerID, status string, data *HeartbeatData) error {
+	reqBody := map[string]interface{}{
 		"worker_id": workerID,
 		"status":    status,
 	}
 
-	if hostname != "" {
-		reqBody["hostname"] = hostname
-	}
-	if gpuInfo != "" {
-		reqBody["gpu_info"] = gpuInfo
+	if data != nil {
+		if data.Hostname != "" {
+			reqBody["hostname"] = data.Hostname
+		}
+		if data.GPUInfo != "" {
+			reqBody["gpu_info"] = data.GPUInfo
+		}
+		if data.VRAM != nil {
+			reqBody["vram"] = *data.VRAM
+		}
+		if data.ComputeCap != "" {
+			reqBody["compute_cap"] = data.ComputeCap
+		}
+		if data.ServiceMode != "" {
+			reqBody["service_mode"] = data.ServiceMode
+		}
+		if data.MaxResolution != nil {
+			reqBody["max_resolution"] = *data.MaxResolution
+		}
+		if data.MaxSteps != nil {
+			reqBody["max_steps"] = *data.MaxSteps
+		}
 	}
 
 	return c.post(ctx, "/api/v1/workers/heartbeat", reqBody, nil)

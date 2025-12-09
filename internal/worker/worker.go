@@ -16,14 +16,15 @@ import (
 
 // Worker represents the main worker agent
 type Worker struct {
-	id         string
-	hostname   string
-	gpuInfo    string
-	config     *Config
-	configPath string
-	apiClient  *client.APIClient
-	pythonExec *executor.PythonExecutor
-	stopChan   chan struct{}
+	id           string
+	hostname     string
+	gpuInfo      string
+	capabilities *GPUCapabilities
+	config       *Config
+	configPath   string
+	apiClient    *client.APIClient
+	pythonExec   *executor.PythonExecutor
+	stopChan     chan struct{}
 }
 
 // NewWorker creates a new worker
@@ -52,9 +53,19 @@ func (w *Worker) Start(ctx context.Context) error {
 		}
 	}
 
-	w.gpuInfo = w.config.Worker.GPUInfo
-	if w.gpuInfo == "" {
-		w.gpuInfo = w.detectGPU()
+	// Detect GPU capabilities
+	caps, err := DetectGPUCapabilities()
+	if err != nil {
+		log.Printf("Warning: Could not detect GPU capabilities: %v", err)
+		// Fall back to basic detection
+		w.gpuInfo = w.config.Worker.GPUInfo
+		if w.gpuInfo == "" {
+			w.gpuInfo = w.detectGPU()
+		}
+	} else {
+		w.capabilities = caps
+		w.gpuInfo = caps.GPUModel
+		log.Printf("Detected GPU: %s", caps.String())
 	}
 
 	if w.config.NeedsRegistration() {
@@ -188,11 +199,30 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 		case <-w.stopChan:
 			return
 		case <-ticker.C:
-			if err := w.apiClient.Heartbeat(ctx, w.id, "online", w.hostname, w.gpuInfo); err != nil {
+			data := w.buildHeartbeatData()
+			if err := w.apiClient.Heartbeat(ctx, w.id, "online", data); err != nil {
 				log.Printf("Heartbeat failed: %v", err)
 			}
 		}
 	}
+}
+
+// buildHeartbeatData creates heartbeat data with capability information
+func (w *Worker) buildHeartbeatData() *client.HeartbeatData {
+	data := &client.HeartbeatData{
+		Hostname: w.hostname,
+		GPUInfo:  w.gpuInfo,
+	}
+
+	if w.capabilities != nil {
+		data.VRAM = &w.capabilities.VRAM
+		data.ComputeCap = w.capabilities.ComputeCap
+		data.ServiceMode = w.capabilities.ServiceMode
+		data.MaxResolution = &w.capabilities.MaxResolution
+		data.MaxSteps = &w.capabilities.MaxSteps
+	}
+
+	return data
 }
 
 // Stop gracefully stops the worker
