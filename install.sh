@@ -116,13 +116,30 @@ echo -e "${YELLOW}[5/7] Installing Power Node binary...${NC}"
 ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
+# Normalize architecture names
+if [ "$ARCH" = "aarch64" ]; then
+    ARCH="arm64"
+fi
+# x86_64 stays as x86_64
+
 # Try to download pre-built binary
 BINARY_URL="https://github.com/$GITHUB_REPO/releases/latest/download/power-node-${OS}-${ARCH}"
-if curl -sSL --head "$BINARY_URL" 2>/dev/null | grep -q "200"; then
+echo "  Binary URL: $BINARY_URL"
+if curl -sSL --head "$BINARY_URL" 2>/dev/null | grep -q "200\|302"; then
     echo "  Downloading pre-built binary..."
-    curl -sSL "$BINARY_URL" -o "$INSTALL_DIR/bin/power-node"
-    chmod +x "$INSTALL_DIR/bin/power-node"
+    if curl -sSL -L "$BINARY_URL" -o "$INSTALL_DIR/bin/power-node" --fail; then
+        chmod +x "$INSTALL_DIR/bin/power-node"
+        echo -e "${GREEN}  ✓ Binary downloaded${NC}"
+    else
+        echo -e "${RED}  Download failed, will build from source...${NC}"
+        rm -f "$INSTALL_DIR/bin/power-node"
+        BUILD_FROM_SOURCE=true
+    fi
 else
+    BUILD_FROM_SOURCE=true
+fi
+
+if [ "$BUILD_FROM_SOURCE" = true ]; then
     echo "  Pre-built binary not available, building from source..."
 
     if ! command -v go &> /dev/null; then
