@@ -268,11 +268,11 @@ snapshot_download(
         deactivate
     fi
 
-    # Also need VAE for PyTorch
+    # Also need VAE for PyTorch (from public Comfy-Org repo)
     download_file \
-        "$HF_BASE/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors" \
+        "$HF_BASE/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors" \
         "$INSTALL_DIR/models/vae/ae.safetensors" \
-        "VAE (FLUX)"
+        "VAE"
 fi
 
 echo -e "${GREEN}  ✓ Models ready${NC}"
