@@ -125,17 +125,15 @@ fi
 # Try to download pre-built binary
 BINARY_URL="https://github.com/$GITHUB_REPO/releases/latest/download/power-node-${OS}-${ARCH}"
 echo "  Binary URL: $BINARY_URL"
-if curl -sSL --head "$BINARY_URL" 2>/dev/null | grep -q "200\|302"; then
-    echo "  Downloading pre-built binary..."
-    if curl -sSL -L "$BINARY_URL" -o "$INSTALL_DIR/bin/power-node" --fail; then
-        chmod +x "$INSTALL_DIR/bin/power-node"
-        echo -e "${GREEN}  ✓ Binary downloaded${NC}"
-    else
-        echo -e "${RED}  Download failed, will build from source...${NC}"
-        rm -f "$INSTALL_DIR/bin/power-node"
-        BUILD_FROM_SOURCE=true
-    fi
+
+# Download binary directly (GitHub releases use redirects)
+echo "  Downloading pre-built binary..."
+if curl -fsSL "$BINARY_URL" -o "$INSTALL_DIR/bin/power-node"; then
+    chmod +x "$INSTALL_DIR/bin/power-node"
+    echo -e "${GREEN}  ✓ Binary downloaded${NC}"
 else
+    echo -e "${YELLOW}  Download failed, building from source...${NC}"
+    rm -f "$INSTALL_DIR/bin/power-node"
     BUILD_FROM_SOURCE=true
 fi
 
@@ -150,8 +148,7 @@ if [ "$BUILD_FROM_SOURCE" = true ]; then
 
     TEMP_DIR=$(mktemp -d)
     git clone --quiet "https://github.com/$GITHUB_REPO.git" "$TEMP_DIR/power-node"
-    cd "$TEMP_DIR/power-node"
-    go build -o "$INSTALL_DIR/bin/power-node" ./cmd/power-node
+    (cd "$TEMP_DIR/power-node" && go build -o "$INSTALL_DIR/bin/power-node" ./cmd/power-node)
     rm -rf "$TEMP_DIR"
 fi
 
