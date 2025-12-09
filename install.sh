@@ -366,11 +366,11 @@ class InferenceService:
 
         images = self.sd.generate_image(
             prompt=prompt,
-            negative_prompt="",
+            negative_prompt="blurry, low quality, distorted, ugly, bad anatomy, deformed",
             width=width,
             height=height,
-            cfg_scale=1.0,
-            guidance=3.5,
+            cfg_scale=7.0,
+            guidance=7.5,
             sample_steps=steps,
             seed=seed,
             batch_count=1,
@@ -486,10 +486,11 @@ class InferenceService:
 
         image = self.pipe(
             prompt=prompt,
+            negative_prompt="blurry, low quality, distorted, ugly, bad anatomy, deformed",
             width=width,
             height=height,
             num_inference_steps=steps,
-            guidance_scale=3.5,
+            guidance_scale=7.5,
             generator=generator,
         ).images[0]
 
