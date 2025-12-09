@@ -545,6 +545,26 @@ chmod +x "$INSTALL_DIR/scripts/inference.py"
 # =============================================================================
 # Create Configuration
 # =============================================================================
+# Preserve existing API key and worker ID if config exists
+EXISTING_API_KEY=""
+EXISTING_WORKER_ID=""
+if [ -f "$INSTALL_DIR/config/config.yaml" ]; then
+    EXISTING_API_KEY=$(grep -E '^\s*key:' "$INSTALL_DIR/config/config.yaml" | head -1 | sed 's/.*key:\s*"\?\([^"]*\)"\?.*/\1/' | tr -d ' ')
+    EXISTING_WORKER_ID=$(grep -E '^\s*id:' "$INSTALL_DIR/config/config.yaml" | head -1 | sed 's/.*id:\s*"\?\([^"]*\)"\?.*/\1/' | tr -d ' ')
+
+    # Filter out placeholder values
+    if [ "$EXISTING_API_KEY" = "YOUR_API_KEY_HERE" ] || [ "$EXISTING_API_KEY" = "" ]; then
+        EXISTING_API_KEY=""
+    fi
+    if [ "$EXISTING_WORKER_ID" = "YOUR_WORKER_ID_HERE" ] || [ "$EXISTING_WORKER_ID" = "" ]; then
+        EXISTING_WORKER_ID=""
+    fi
+
+    if [ -n "$EXISTING_API_KEY" ] || [ -n "$EXISTING_WORKER_ID" ]; then
+        echo -e "  ${GREEN}✓${NC} Preserving existing credentials"
+    fi
+fi
+
 if [ "$SERVICE_MODE" = "gguf" ]; then
 cat > "$INSTALL_DIR/config/config.yaml" << EOF
 # Power Node Configuration
@@ -552,14 +572,14 @@ cat > "$INSTALL_DIR/config/config.yaml" << EOF
 
 api:
   url: $API_URL
-  key: ""  # Your API key here
+  key: "${EXISTING_API_KEY}"  # Your API key here
 
 model:
   service_mode: gguf
   vram_gb: $VRAM_GB
 
 worker:
-  id: ""  # Your worker ID here
+  id: "${EXISTING_WORKER_ID}"  # Your worker ID here
   hostname: "$(hostname)"
   gpu_info: "$GPU_NAME"
   poll_interval: 5s
@@ -588,14 +608,14 @@ cat > "$INSTALL_DIR/config/config.yaml" << EOF
 
 api:
   url: $API_URL
-  key: ""  # Your API key here
+  key: "${EXISTING_API_KEY}"  # Your API key here
 
 model:
   service_mode: pytorch
   vram_gb: $VRAM_GB
 
 worker:
-  id: ""  # Your worker ID here
+  id: "${EXISTING_WORKER_ID}"  # Your worker ID here
   hostname: "$(hostname)"
   gpu_info: "$GPU_NAME"
   poll_interval: 5s
