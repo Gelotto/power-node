@@ -364,13 +364,15 @@ class InferenceService:
         if seed == -1:
             seed = random.randint(0, 2**31 - 1)
 
+        # Z-Image-Turbo is a distilled model - CFG is baked in during training
+        # guidance_scale/cfg_scale MUST be 0.0, negative prompts are not supported
         images = self.sd.generate_image(
             prompt=prompt,
-            negative_prompt="blurry, low quality, distorted, ugly, bad anatomy, deformed",
+            negative_prompt="",  # Z-Image-Turbo doesn't use negative prompts
             width=width,
             height=height,
-            cfg_scale=7.0,
-            guidance=7.5,
+            cfg_scale=0.0,       # MUST be 0.0 for turbo models
+            guidance=0.0,        # MUST be 0.0 for turbo models
             sample_steps=steps,
             seed=seed,
             batch_count=1,
@@ -484,13 +486,15 @@ class InferenceService:
 
         generator = torch.Generator("cuda").manual_seed(seed)
 
+        # Z-Image-Turbo is a distilled model - CFG is baked in during training
+        # guidance_scale MUST be 0.0, negative prompts are not supported
         image = self.pipe(
             prompt=prompt,
-            negative_prompt="blurry, low quality, distorted, ugly, bad anatomy, deformed",
+            # DO NOT use negative_prompt - Z-Image-Turbo ignores it
             width=width,
             height=height,
             num_inference_steps=steps,
-            guidance_scale=7.5,
+            guidance_scale=0.0,  # MUST be 0.0 for turbo models
             generator=generator,
         ).images[0]
 
