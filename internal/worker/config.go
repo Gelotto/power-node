@@ -62,7 +62,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Set defaults
 	if cfg.API.URL == "" {
-		cfg.API.URL = "https://api.gen.gelotto.io"
+		cfg.API.URL = "https://api.picshapes.com"
 	}
 	if cfg.Model.Name == "" {
 		cfg.Model.Name = "z-image-turbo"
