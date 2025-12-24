@@ -53,6 +53,33 @@ if ! command -v curl &> /dev/null; then
     exit 1
 fi
 
+# Check if venv module is available, auto-install if missing
+if ! python3 -c "import venv" 2>/dev/null; then
+    echo -e "${YELLOW}  Python venv module not found. Installing...${NC}"
+
+    # Detect package manager and install
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -qq && sudo apt-get install -y python3-venv
+    elif command -v dnf &> /dev/null; then
+        sudo dnf install -y python3-venv
+    elif command -v pacman &> /dev/null; then
+        sudo pacman -S --noconfirm python
+    elif command -v zypper &> /dev/null; then
+        sudo zypper install -y python3-venv
+    else
+        echo -e "${RED}ERROR: Could not auto-install python3-venv.${NC}"
+        echo "Please install it manually and re-run this script."
+        exit 1
+    fi
+
+    # Verify it worked
+    if ! python3 -c "import venv" 2>/dev/null; then
+        echo -e "${RED}ERROR: Failed to install python3-venv.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}  ✓ python3-venv installed${NC}"
+fi
+
 echo -e "${GREEN}  ✓ All system requirements met${NC}"
 
 # =============================================================================
@@ -146,12 +173,24 @@ if [ "$BUILD_FROM_SOURCE" = true ]; then
         exit 1
     fi
 
+    if ! command -v git &> /dev/null; then
+        echo -e "${RED}ERROR: git not found. Required for building from source.${NC}"
+        exit 1
+    fi
+
     TEMP_DIR=$(mktemp -d)
+    trap "rm -rf '$TEMP_DIR'" EXIT
     git clone --quiet "https://github.com/$GITHUB_REPO.git" "$TEMP_DIR/power-node"
     (cd "$TEMP_DIR/power-node" && go build -o "$INSTALL_DIR/bin/power-node" ./cmd/power-node)
     rm -rf "$TEMP_DIR"
+    trap - EXIT
 fi
 
+# Verify binary installation
+if [ ! -f "$INSTALL_DIR/bin/power-node" ] || [ ! -x "$INSTALL_DIR/bin/power-node" ]; then
+    echo -e "${RED}ERROR: Binary not found or not executable${NC}"
+    exit 1
+fi
 echo -e "${GREEN}  ✓ Binary installed${NC}"
 
 # =============================================================================
@@ -159,28 +198,126 @@ echo -e "${GREEN}  ✓ Binary installed${NC}"
 # =============================================================================
 echo -e "${YELLOW}[6/7] Setting up Python environment...${NC}"
 
-if [ ! -d "$INSTALL_DIR/venv" ]; then
-    python3 -m venv "$INSTALL_DIR/venv"
+# Validate venv completeness (not just existence)
+VENV_VALID=true
+if [ ! -f "$INSTALL_DIR/venv/bin/activate" ] || \
+   [ ! -f "$INSTALL_DIR/venv/bin/pip" ] || \
+   [ ! -f "$INSTALL_DIR/venv/bin/python3" ]; then
+    VENV_VALID=false
+fi
+
+if [ "$VENV_VALID" = false ]; then
+    echo "  Creating Python virtual environment..."
+    rm -rf "$INSTALL_DIR/venv"  # Remove incomplete venv
+
+    if ! python3 -m venv "$INSTALL_DIR/venv"; then
+        echo -e "${RED}ERROR: Failed to create Python virtual environment.${NC}"
+        echo -e "Try: ${YELLOW}sudo apt install python3-venv${NC}"
+        exit 1
+    fi
+
+    # Verify creation was successful
+    if [ ! -f "$INSTALL_DIR/venv/bin/activate" ]; then
+        echo -e "${RED}ERROR: Virtual environment creation incomplete.${NC}"
+        echo "The venv module may be broken. Try reinstalling python3-venv."
+        exit 1
+    fi
+else
+    echo "  Using existing Python virtual environment"
 fi
 
 source "$INSTALL_DIR/venv/bin/activate"
-pip install --upgrade pip --quiet
+
+if ! pip install --upgrade pip --quiet; then
+    echo -e "${RED}ERROR: Failed to upgrade pip${NC}"
+    exit 1
+fi
 
 if [ "$SERVICE_MODE" = "gguf" ]; then
+    # Auto-install build tools if missing
+    if ! command -v gcc &> /dev/null || ! command -v g++ &> /dev/null; then
+        echo -e "${YELLOW}  Build tools (gcc/g++) not found. Installing...${NC}"
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y build-essential cmake
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y gcc gcc-c++ cmake
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -S --noconfirm base-devel cmake
+        else
+            echo -e "${RED}ERROR: Could not auto-install build tools.${NC}"
+            echo "Please install gcc, g++, and cmake manually."
+            exit 1
+        fi
+        echo -e "${GREEN}  ✓ Build tools installed${NC}"
+    fi
+
+    # Auto-install CUDA toolkit if nvcc missing (for CUDA acceleration)
+    if ! command -v nvcc &> /dev/null; then
+        echo -e "${YELLOW}  CUDA toolkit (nvcc) not found. Installing...${NC}"
+        CUDA_INSTALLED=false
+        if command -v apt-get &> /dev/null; then
+            if sudo apt-get update -qq && sudo apt-get install -y nvidia-cuda-toolkit; then
+                CUDA_INSTALLED=true
+            fi
+        elif command -v dnf &> /dev/null; then
+            if sudo dnf install -y cuda-toolkit; then
+                CUDA_INSTALLED=true
+            fi
+        fi
+
+        # Reload PATH to pick up nvcc
+        export PATH="/usr/local/cuda/bin:$PATH"
+
+        if command -v nvcc &> /dev/null; then
+            echo -e "${GREEN}  ✓ CUDA toolkit installed${NC}"
+        elif [ "$CUDA_INSTALLED" = true ]; then
+            echo -e "${YELLOW}  Warning: CUDA installed but nvcc not in PATH${NC}"
+            echo "  You may need to add /usr/local/cuda/bin to your PATH"
+        else
+            echo -e "${YELLOW}  Warning: Could not install CUDA toolkit automatically${NC}"
+            echo "  Install manually: sudo apt install nvidia-cuda-toolkit"
+            echo "  Continuing without CUDA (will use CPU-only mode)"
+        fi
+    fi
+
     echo "  Installing stable-diffusion-cpp-python..."
-    echo "  (This may take several minutes for compilation)"
+    echo "  (This may take several minutes for CUDA compilation)"
 
     if command -v nvcc &> /dev/null; then
-        CMAKE_ARGS="-DSD_CUDA=ON" pip install 'stable-diffusion-cpp-python>=0.4.0' --quiet 2>&1 | grep -E "(error|Error)" || true
+        echo "  CUDA detected: $(nvcc --version | grep release | awk '{print $6}')"
+        if ! CMAKE_ARGS="-DSD_CUDA=ON" pip install 'stable-diffusion-cpp-python>=0.4.0'; then
+            echo -e "${RED}ERROR: Failed to compile stable-diffusion-cpp-python${NC}"
+            echo "  This usually means CUDA headers are missing or incompatible."
+            exit 1
+        fi
     else
-        pip install 'stable-diffusion-cpp-python>=0.4.0' --quiet
+        echo -e "${YELLOW}  Warning: nvcc not found, installing CPU-only (slower inference)${NC}"
+        if ! pip install 'stable-diffusion-cpp-python>=0.4.0'; then
+            echo -e "${RED}ERROR: Failed to install stable-diffusion-cpp-python${NC}"
+            exit 1
+        fi
     fi
-    pip install pillow --quiet
+
+    pip install pillow --quiet || { echo -e "${RED}ERROR: Failed to install pillow${NC}"; exit 1; }
+
+    # Verify installation
+    if ! python3 -c "from stable_diffusion_cpp import StableDiffusion" 2>/dev/null; then
+        echo -e "${RED}ERROR: stable-diffusion-cpp-python installed but cannot be imported.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}  ✓ ML packages installed${NC}"
 else
     echo "  Installing PyTorch and dependencies for Blackwell GPU..."
     # Blackwell GPUs (sm_120) require PyTorch nightly with CUDA 12.8+
-    pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128 --quiet
-    pip install transformers diffusers safetensors accelerate tqdm pillow --quiet
+    if ! pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128 --quiet; then
+        echo -e "${RED}ERROR: Failed to install PyTorch${NC}"
+        exit 1
+    fi
+    if ! pip install transformers diffusers safetensors accelerate tqdm pillow --quiet; then
+        echo -e "${RED}ERROR: Failed to install ML dependencies${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}  ✓ ML packages installed${NC}"
 fi
 
 deactivate
@@ -190,6 +327,23 @@ echo -e "${GREEN}  ✓ Python environment ready${NC}"
 # Download Models
 # =============================================================================
 echo -e "${YELLOW}[7/7] Downloading models...${NC}"
+
+# Check available disk space
+AVAILABLE_KB=$(df -k "$INSTALL_DIR" | tail -1 | awk '{print $4}')
+AVAILABLE_GB=$((AVAILABLE_KB / 1024 / 1024))
+
+if [ "$SERVICE_MODE" = "gguf" ]; then
+    REQUIRED_GB=12  # ~9GB models + buffer
+else
+    REQUIRED_GB=35  # ~31GB PyTorch models + buffer
+fi
+
+if [ "$AVAILABLE_GB" -lt "$REQUIRED_GB" ]; then
+    echo -e "${RED}ERROR: Not enough disk space.${NC}"
+    echo "  Required: ${REQUIRED_GB}GB, Available: ${AVAILABLE_GB}GB"
+    echo "  Free up space in $(dirname $INSTALL_DIR) and try again."
+    exit 1
+fi
 
 download_file() {
     local url="$1"
@@ -252,7 +406,10 @@ else
         echo -e "  ${GREEN}✓${NC} Z-Image-Turbo (cached)"
     else
         source "$INSTALL_DIR/venv/bin/activate"
-        pip install huggingface_hub --quiet
+        if ! pip install huggingface_hub --quiet; then
+            echo -e "${RED}ERROR: Failed to install huggingface_hub${NC}"
+            exit 1
+        fi
         python3 -c "
 from huggingface_hub import snapshot_download
 snapshot_download(
@@ -643,9 +800,10 @@ fi
 # =============================================================================
 cat > "$INSTALL_DIR/start.sh" << EOF
 #!/bin/bash
-cd "$INSTALL_DIR"
-source venv/bin/activate
-./bin/power-node -config "$INSTALL_DIR/config/config.yaml"
+set -e
+cd "$INSTALL_DIR" || { echo "ERROR: Cannot cd to $INSTALL_DIR"; exit 1; }
+source "$INSTALL_DIR/venv/bin/activate" || { echo "ERROR: Cannot activate venv"; exit 1; }
+exec "$INSTALL_DIR/bin/power-node" -config "$INSTALL_DIR/config/config.yaml"
 EOF
 chmod +x "$INSTALL_DIR/start.sh"
 
@@ -656,7 +814,7 @@ cat > "$INSTALL_DIR/update.sh" << 'UPDATEEOF'
 #!/bin/bash
 set -e
 
-INSTALL_DIR="$HOME/.power-node"
+INSTALL_DIR="${POWER_NODE_DIR:-$HOME/.power-node}"
 GITHUB_REPO="Gelotto/power-node"
 
 RED='\033[0;31m'
@@ -745,6 +903,18 @@ Restart=always
 RestartSec=10
 Environment=HOME=$HOME
 
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=power-node
+
+# Timeouts (model loading can take a while)
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+# Resource limits
+LimitNOFILE=65536
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -761,6 +931,44 @@ echo -e "  ${BLUE}Installation:${NC}  $INSTALL_DIR"
 echo -e "  ${BLUE}GPU:${NC}           $GPU_NAME ($VRAM_GB GB)"
 echo -e "  ${BLUE}Mode:${NC}          $SERVICE_MODE"
 echo ""
+
+# Offer to install systemd service
+echo -e "${CYAN}Service Installation:${NC}"
+echo ""
+SERVICE_INSTALLED=false
+
+# Check if we can read from terminal (won't work with curl | bash)
+if read -p "  Enable Power Node to run at system startup? (Y/n) " -r < /dev/tty 2>/dev/null; then
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        echo "  Installing systemd service..."
+        if sudo cp "$INSTALL_DIR/power-node.service" /etc/systemd/system/ && \
+           sudo systemctl daemon-reload && \
+           sudo systemctl enable power-node; then
+            echo -e "  ${GREEN}✓ Service installed and enabled${NC}"
+            SERVICE_INSTALLED=true
+        else
+            echo -e "  ${YELLOW}Warning: Could not install service automatically${NC}"
+            echo "  You can install it manually later (see commands below)"
+        fi
+    else
+        echo ""
+        echo "  To install manually later:"
+        echo "    sudo cp $INSTALL_DIR/power-node.service /etc/systemd/system/"
+        echo "    sudo systemctl daemon-reload"
+        echo "    sudo systemctl enable power-node"
+    fi
+else
+    # Non-interactive mode (curl | bash) - show manual instructions
+    echo "  [Non-interactive mode detected]"
+    echo ""
+    echo "  To enable the service, run:"
+    echo "    sudo cp $INSTALL_DIR/power-node.service /etc/systemd/system/"
+    echo "    sudo systemctl daemon-reload"
+    echo "    sudo systemctl enable power-node"
+    echo "    sudo systemctl start power-node"
+fi
+echo ""
+
 echo -e "${CYAN}Next steps:${NC}"
 echo ""
 echo "  1. Register at https://picshapes.com/workers/register"
@@ -771,8 +979,13 @@ echo "       key: \"YOUR_API_KEY\""
 echo "     worker:"
 echo "       id: \"YOUR_WORKER_ID\""
 echo ""
-echo "  3. Start the node:"
-echo "     $INSTALL_DIR/start.sh"
+if [ "$SERVICE_INSTALLED" = true ]; then
+    echo "  3. Start the service:"
+    echo "     sudo systemctl start power-node"
+else
+    echo "  3. Start the node:"
+    echo "     $INSTALL_DIR/start.sh"
+fi
 echo ""
 echo -e "${CYAN}Useful commands:${NC}"
 echo ""
@@ -780,5 +993,12 @@ echo "  Check status:   $INSTALL_DIR/bin/power-node --status"
 echo "  Validate setup: $INSTALL_DIR/bin/power-node --check"
 echo "  Update:         $INSTALL_DIR/update.sh"
 echo "  Show version:   $INSTALL_DIR/bin/power-node --version"
+echo ""
+echo -e "${CYAN}Service commands:${NC}"
+echo ""
+echo "  Start service:  sudo systemctl start power-node"
+echo "  Stop service:   sudo systemctl stop power-node"
+echo "  View logs:      sudo journalctl -u power-node -f"
+echo "  Service status: sudo systemctl status power-node"
 echo ""
 echo -e "${GREEN}Happy computing!${NC}"
