@@ -29,7 +29,7 @@ Power Node lets you contribute GPU compute power to generate AI images and earn 
 
 ### 1. Register Your Worker
 
-Visit [https://picshapes.com/workers/register](https://picshapes.com/workers/register) and register with a unique hostname.
+Visit [https://gelotto.io/workers](https://gelotto.io/workers) and register with a unique hostname.
 
 You'll receive:
 - **Worker ID** - Your unique identifier
@@ -104,7 +104,7 @@ sudo journalctl -u power-node -f
 
 ## How It Works
 
-1. **Register** - Create an account at picshapes.com
+1. **Register** - Create an account at gelotto.io/workers
 2. **Connect** - Power Node connects to the Gelotto API
 3. **Claim Jobs** - The node polls for available generation jobs
 4. **Generate** - Your GPU generates images using the Z-Image model
@@ -115,7 +115,7 @@ sudo journalctl -u power-node -f
 
 ```yaml
 api:
-  url: https://api.picshapes.com   # API endpoint
+  url: https://api.gelotto.io      # API endpoint
   key: ""                            # Your API key
 
 model:
@@ -158,7 +158,7 @@ If you still get OOM errors, try reducing resolution or closing other GPU applic
 ### Connection errors
 
 1. Check your API key and worker ID are correct in config.yaml
-2. Verify network connectivity: `curl https://api.picshapes.com/health`
+2. Verify network connectivity: `curl https://api.gelotto.io/health`
 3. Check if the API is reachable from your network
 
 ### Model download failed
@@ -192,7 +192,7 @@ go build -o bin/power-node ./cmd/power-node
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `POWER_NODE_DIR` | Installation directory | `~/.power-node` |
-| `API_URL` | Backend API URL | `https://api.picshapes.com` |
+| `API_URL` | Backend API URL | `https://api.gelotto.io` |
 
 ## License
 
@@ -200,6 +200,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Links
 
-- [Gelotto AI Generator](https://picshapes.com)
-- [Worker Dashboard](https://picshapes.com/workers)
+- [Gelotto Network](https://gelotto.io)
+- [PicShapes AI Generator](https://picshapes.com)
+- [Worker Registration](https://gelotto.io/workers)
 - [Discord](https://discord.gg/gelotto)

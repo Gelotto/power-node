@@ -203,7 +203,7 @@ func runChecks(configPath string) bool {
 		fmt.Printf("    key: \"YOUR_API_KEY_HERE\"\n\n")
 		fmt.Printf("  worker:\n")
 		fmt.Printf("    id: \"YOUR_WORKER_ID_HERE\"\n\n")
-		fmt.Printf("  Get your credentials at: https://picshapes.com/workers/register\n")
+		fmt.Printf("  Get your credentials at: https://gelotto.io/workers\n")
 		return false
 	}
 	fmt.Println("✓ API key configured")

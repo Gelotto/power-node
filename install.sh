@@ -13,7 +13,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 INSTALL_DIR="${POWER_NODE_DIR:-$HOME/.power-node}"
-API_URL="${API_URL:-https://api.picshapes.com}"
+API_URL="${API_URL:-https://api.gelotto.io}"
 HF_BASE="https://huggingface.co"
 GITHUB_REPO="Gelotto/power-node"
 
@@ -730,7 +730,7 @@ fi
 if [ "$SERVICE_MODE" = "gguf" ]; then
 cat > "$INSTALL_DIR/config/config.yaml" << EOF
 # Power Node Configuration
-# Register at https://picshapes.com/workers/register to get your credentials
+# Register at https://gelotto.io/workers to get your credentials
 
 api:
   url: $API_URL
@@ -766,7 +766,7 @@ else
 # PyTorch configuration
 cat > "$INSTALL_DIR/config/config.yaml" << EOF
 # Power Node Configuration (PyTorch Mode)
-# Register at https://picshapes.com/workers/register to get your credentials
+# Register at https://gelotto.io/workers to get your credentials
 
 api:
   url: $API_URL
@@ -971,7 +971,7 @@ echo ""
 
 echo -e "${CYAN}Next steps:${NC}"
 echo ""
-echo "  1. Register at https://picshapes.com/workers/register"
+echo "  1. Register at https://gelotto.io/workers"
 echo ""
 echo "  2. Add your credentials to $INSTALL_DIR/config/config.yaml:"
 echo "     api:"

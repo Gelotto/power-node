@@ -70,7 +70,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	// Validate configuration before starting
 	if err := w.config.Validate(); err != nil {
-		return fmt.Errorf("%v\n\n  Please add your credentials to:\n  %s\n\n  Get your credentials at: https://picshapes.com/workers/register", err, w.configPath)
+		return fmt.Errorf("%v\n\n  Please add your credentials to:\n  %s\n\n  Get your credentials at: https://gelotto.io/workers", err, w.configPath)
 	}
 
 	log.Printf("Using credentials - Worker ID: %s", w.id)
