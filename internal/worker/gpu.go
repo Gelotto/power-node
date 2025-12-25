@@ -88,15 +88,16 @@ func determineServiceMode(computeCap string) string {
 }
 
 // calculateTierLimits determines capability tier and limits based on VRAM
+// MaxResolution values are capped to Z-Image-Turbo's actual limits (~2MP max)
 func calculateTierLimits(vramGB int, serviceMode string) (tier string, maxRes, maxSteps int) {
 	// PyTorch mode requires more VRAM, so adjust thresholds
 	if serviceMode == "pytorch" {
 		// PyTorch mode - higher VRAM requirements
 		switch {
 		case vramGB >= 16:
-			return "premium", 4096, 32
+			return "premium", 1536, 8 // Z-Image-Turbo: ~2MP max, 8 NFE optimal
 		case vramGB >= 14:
-			return "pro", 2048, 16
+			return "pro", 1440, 8
 		default:
 			return "basic", 1024, 8
 		}
@@ -105,9 +106,9 @@ func calculateTierLimits(vramGB int, serviceMode string) (tier string, maxRes, m
 	// GGUF mode - more efficient memory usage
 	switch {
 	case vramGB >= 16:
-		return "premium", 4096, 32
+		return "premium", 1536, 8 // Z-Image-Turbo: ~2MP max, 8 NFE optimal
 	case vramGB >= 12:
-		return "pro", 2048, 16
+		return "pro", 1440, 8
 	case vramGB >= 8:
 		return "basic", 1024, 8
 	default:
