@@ -521,19 +521,19 @@ class InferenceService:
         if seed == -1:
             seed = random.randint(0, 2**31 - 1)
 
-        # Z-Image-Turbo is a distilled model - CFG is baked in during training
-        # guidance_scale/cfg_scale MUST be 0.0, negative prompts are not supported
+        # Z-Image-Turbo with stable-diffusion.cpp uses cfg_scale=1.0
+        # (Note: HuggingFace diffusers uses guidance_scale=0.0, but sd.cpp is different!)
         images = self.sd.generate_image(
             prompt=prompt,
             negative_prompt="",  # Z-Image-Turbo doesn't use negative prompts
             width=width,
             height=height,
-            cfg_scale=0.0,       # MUST be 0.0 for turbo models
-            guidance=0.0,        # MUST be 0.0 for turbo models
+            cfg_scale=1.0,       # stable-diffusion.cpp uses 1.0 for Z-Image-Turbo
+            guidance=1.0,        # stable-diffusion.cpp uses 1.0
             sample_steps=steps,
             seed=seed,
             batch_count=1,
-            vae_tiling=self.vram_gb < 12,
+            vae_tiling=True,  # Always enable - Z-Image VAE needs ~27GB for 1024x1024 without tiling
         )
 
         if not images:
