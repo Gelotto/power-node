@@ -38,6 +38,7 @@ type WorkerConfig struct {
 	GPUInfo           string        `yaml:"gpu_info"`
 	PollInterval      time.Duration `yaml:"poll_interval"`
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
+	IdleDetection     IdleConfig    `yaml:"idle_detection"` // GPU idle detection (opt-in)
 }
 
 // PythonConfig holds Python interpreter settings
@@ -46,6 +47,15 @@ type PythonConfig struct {
 	ScriptPath string            `yaml:"script_path"`
 	ScriptArgs []string          `yaml:"script_args"`
 	Env        map[string]string `yaml:"env"`
+}
+
+// IdleConfig holds GPU idle detection settings (opt-in feature)
+type IdleConfig struct {
+	Enabled              bool          `yaml:"enabled"`               // Default: false (opt-in)
+	UtilizationThreshold int           `yaml:"utilization_threshold"` // Default: 50%
+	MemoryThreshold      int           `yaml:"memory_threshold"`      // Default: 80%
+	CheckInterval        time.Duration `yaml:"check_interval"`        // Default: 5s
+	CooldownPeriod       time.Duration `yaml:"cooldown_period"`       // Default: 30s
 }
 
 // LoadConfig loads configuration from a YAML file
@@ -78,6 +88,20 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Python.ScriptPath == "" {
 		cfg.Python.ScriptPath = "scripts/inference.py"
+	}
+
+	// Idle detection defaults (feature is opt-in, so enabled defaults to false)
+	if cfg.Worker.IdleDetection.UtilizationThreshold == 0 {
+		cfg.Worker.IdleDetection.UtilizationThreshold = 50
+	}
+	if cfg.Worker.IdleDetection.MemoryThreshold == 0 {
+		cfg.Worker.IdleDetection.MemoryThreshold = 80
+	}
+	if cfg.Worker.IdleDetection.CheckInterval == 0 {
+		cfg.Worker.IdleDetection.CheckInterval = 5 * time.Second
+	}
+	if cfg.Worker.IdleDetection.CooldownPeriod == 0 {
+		cfg.Worker.IdleDetection.CooldownPeriod = 30 * time.Second
 	}
 
 	return &cfg, nil

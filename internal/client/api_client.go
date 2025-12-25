@@ -41,6 +41,10 @@ type HeartbeatData struct {
 	ServiceMode   string
 	MaxResolution *int
 	MaxSteps      *int
+	// GPU metrics for idle detection
+	GPUUtilization *int // Current GPU utilization (0-100)
+	GPUMemoryUsed  *int // Current GPU memory used (MB)
+	GPUTemperature *int // Current GPU temperature (Celsius)
 }
 
 // Heartbeat sends a heartbeat to the backend
@@ -71,6 +75,16 @@ func (c *APIClient) Heartbeat(ctx context.Context, workerID, status string, data
 		}
 		if data.MaxSteps != nil {
 			reqBody["max_steps"] = *data.MaxSteps
+		}
+		// GPU metrics for idle detection
+		if data.GPUUtilization != nil {
+			reqBody["gpu_utilization"] = *data.GPUUtilization
+		}
+		if data.GPUMemoryUsed != nil {
+			reqBody["gpu_memory_used"] = *data.GPUMemoryUsed
+		}
+		if data.GPUTemperature != nil {
+			reqBody["gpu_temperature"] = *data.GPUTemperature
 		}
 	}
 

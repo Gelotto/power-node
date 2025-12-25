@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Gelotto/power-node/internal/client"
@@ -25,6 +26,15 @@ type Worker struct {
 	apiClient    *client.APIClient
 	pythonExec   *executor.PythonExecutor
 	stopChan     chan struct{}
+	// GPU idle detection
+	gpuMonitor *GPUMonitor
+	isPaused   bool
+	pauseMu    sync.RWMutex
+	// Python lifecycle management (for VRAM release)
+	pythonMu        sync.Mutex // Protects pythonExec and pythonRunning
+	pythonRunning   bool
+	processingJob   bool
+	processingJobMu sync.RWMutex
 }
 
 // NewWorker creates a new worker
@@ -105,8 +115,21 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	log.Println("Waiting for Python service to initialize...")
 	time.Sleep(10 * time.Second)
+	w.pythonRunning = true
 
 	log.Println("Worker fully initialized!")
+
+	// Start GPU idle detection if enabled
+	if w.config.Worker.IdleDetection.Enabled {
+		monitor, err := NewGPUMonitor(w.config.Worker.IdleDetection)
+		if err != nil {
+			log.Printf("Warning: GPU idle detection disabled: %v", err)
+		} else {
+			w.gpuMonitor = monitor
+			w.gpuMonitor.Start()
+			log.Println("GPU idle detection enabled")
+		}
+	}
 
 	go w.heartbeatLoop(ctx)
 
@@ -130,7 +153,49 @@ func (w *Worker) jobLoop(ctx context.Context) error {
 			log.Println("Stop signal received, stopping job loop...")
 			return nil
 
+		// Handle pause signal from GPU monitor
+		case <-w.getPauseChan():
+			w.pauseMu.Lock()
+			w.isPaused = true
+			w.pauseMu.Unlock()
+			log.Println("Paused: GPU busy with external workload")
+
+			// Stop Python to free VRAM - SYNCHRONOUS to prevent race with resume
+			// This waits for current job to complete, then stops Python
+			w.stopPythonForPause()
+
+		// Handle resume signal from GPU monitor
+		case <-w.getResumeChan():
+			log.Println("GPU idle - restarting Python and reloading model...")
+
+			// Restart Python and reload model
+			if err := w.restartPython(); err != nil {
+				log.Printf("Failed to restart Python: %v - staying paused", err)
+				continue
+			}
+
+			w.pauseMu.Lock()
+			w.isPaused = false
+			w.pauseMu.Unlock()
+			log.Println("Resumed: Model reloaded, ready to claim jobs")
+
 		case <-ticker.C:
+			// Skip claiming if paused
+			w.pauseMu.RLock()
+			paused := w.isPaused
+			w.pauseMu.RUnlock()
+			if paused {
+				continue
+			}
+
+			// Skip claiming if Python not running (safety check)
+			w.pythonMu.Lock()
+			running := w.pythonRunning
+			w.pythonMu.Unlock()
+			if !running {
+				continue
+			}
+
 			job, err := w.apiClient.ClaimJob(ctx, w.id)
 			if err != nil {
 				log.Printf("Error claiming job: %v", err)
@@ -147,8 +212,107 @@ func (w *Worker) jobLoop(ctx context.Context) error {
 	}
 }
 
+// getPauseChan safely gets the pause channel (returns nil if no monitor)
+func (w *Worker) getPauseChan() <-chan struct{} {
+	if w.gpuMonitor != nil {
+		return w.gpuMonitor.PauseChan()
+	}
+	return nil
+}
+
+// getResumeChan safely gets the resume channel (returns nil if no monitor)
+func (w *Worker) getResumeChan() <-chan struct{} {
+	if w.gpuMonitor != nil {
+		return w.gpuMonitor.ResumeChan()
+	}
+	return nil
+}
+
+// isProcessingJob checks if a job is currently being processed
+func (w *Worker) isProcessingJob() bool {
+	w.processingJobMu.RLock()
+	defer w.processingJobMu.RUnlock()
+	return w.processingJob
+}
+
+// setProcessingJob sets the job processing state
+func (w *Worker) setProcessingJob(processing bool) {
+	w.processingJobMu.Lock()
+	w.processingJob = processing
+	w.processingJobMu.Unlock()
+}
+
+// stopPythonForPause stops Python to free VRAM, waiting for current job to finish
+// This is called SYNCHRONOUSLY to ensure stop completes before any resume can happen
+func (w *Worker) stopPythonForPause() {
+	// Wait for current job to complete before stopping Python
+	for w.isProcessingJob() {
+		time.Sleep(1 * time.Second)
+		log.Println("Waiting for current job to complete before freeing VRAM...")
+	}
+
+	// Lock to prevent race with restartPython
+	w.pythonMu.Lock()
+	defer w.pythonMu.Unlock()
+
+	if w.pythonExec != nil && w.pythonRunning {
+		log.Println("Stopping Python to free VRAM...")
+		if err := w.pythonExec.Stop(); err != nil {
+			log.Printf("Error stopping Python: %v", err)
+		}
+		w.pythonExec = nil
+		w.pythonRunning = false
+		log.Println("VRAM freed - user can now use GPU for other applications")
+	}
+}
+
+// restartPython restarts the Python inference service and waits for model to load
+func (w *Worker) restartPython() error {
+	w.pythonMu.Lock()
+	defer w.pythonMu.Unlock()
+
+	// Safety: ensure old executor is fully stopped (defensive)
+	if w.pythonExec != nil {
+		log.Println("Cleaning up old Python executor...")
+		w.pythonExec.Stop()
+		w.pythonExec = nil
+	}
+
+	scriptArgs := w.config.Python.ScriptArgs
+	if len(scriptArgs) == 0 && w.config.Model.Path != "" {
+		scriptArgs = []string{w.config.Model.Path}
+	}
+
+	w.pythonExec = executor.NewPythonExecutor(
+		w.config.Python.Executable,
+		w.config.Python.ScriptPath,
+		scriptArgs,
+		w.config.Python.Env,
+	)
+
+	if err := w.pythonExec.Start(
+		w.config.Python.Executable,
+		w.config.Python.ScriptPath,
+		scriptArgs,
+		w.config.Python.Env,
+	); err != nil {
+		return fmt.Errorf("failed to restart Python: %w", err)
+	}
+
+	// Wait for model to reload
+	log.Println("Waiting for model to reload (10s)...")
+	time.Sleep(10 * time.Second)
+	w.pythonRunning = true
+
+	return nil
+}
+
 // processJob processes a single job
 func (w *Worker) processJob(ctx context.Context, job *models.Job) {
+	// Track that we're processing a job (for pause coordination)
+	w.setProcessingJob(true)
+	defer w.setProcessingJob(false)
+
 	log.Printf("Processing job %s...", job.ID)
 	startTime := time.Now()
 
@@ -201,7 +365,16 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			data := w.buildHeartbeatData()
-			if err := w.apiClient.Heartbeat(ctx, w.id, "online", data); err != nil {
+
+			// Determine status based on pause state
+			status := "online"
+			w.pauseMu.RLock()
+			if w.isPaused {
+				status = "paused"
+			}
+			w.pauseMu.RUnlock()
+
+			if err := w.apiClient.Heartbeat(ctx, w.id, status, data); err != nil {
 				log.Printf("Heartbeat failed: %v", err)
 			}
 		}
@@ -223,6 +396,14 @@ func (w *Worker) buildHeartbeatData() *client.HeartbeatData {
 		data.MaxSteps = &w.capabilities.MaxSteps
 	}
 
+	// Add GPU metrics if monitoring is active
+	if w.gpuMonitor != nil {
+		metrics := w.gpuMonitor.GetMetrics()
+		data.GPUUtilization = &metrics.Utilization
+		data.GPUMemoryUsed = &metrics.MemoryUsed
+		data.GPUTemperature = &metrics.Temperature
+	}
+
 	return data
 }
 
@@ -232,11 +413,21 @@ func (w *Worker) Stop() error {
 
 	close(w.stopChan)
 
+	// Stop GPU monitor
+	if w.gpuMonitor != nil {
+		w.gpuMonitor.Stop()
+	}
+
+	// Stop Python with mutex protection
+	w.pythonMu.Lock()
 	if w.pythonExec != nil {
 		if err := w.pythonExec.Stop(); err != nil {
 			log.Printf("Error stopping Python executor: %v", err)
 		}
+		w.pythonExec = nil
+		w.pythonRunning = false
 	}
+	w.pythonMu.Unlock()
 
 	log.Println("Worker stopped")
 	return nil
