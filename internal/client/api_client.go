@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/Gelotto/power-node/internal/models"
 )
@@ -21,9 +22,16 @@ type APIClient struct {
 // NewAPIClient creates a new API client
 func NewAPIClient(baseURL, apiKey string) *APIClient {
 	return &APIClient{
-		baseURL:    baseURL,
-		apiKey:     apiKey,
-		httpClient: &http.Client{},
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 20 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+			},
+		},
 	}
 }
 
