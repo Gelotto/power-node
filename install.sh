@@ -352,7 +352,7 @@ else
         exit 1
     fi
     # Pin diffusers>=0.32.0 for Wan video model support
-    if ! pip install transformers 'diffusers>=0.32.0' safetensors accelerate tqdm pillow --quiet; then
+    if ! pip install transformers 'diffusers>=0.32.0' safetensors accelerate tqdm pillow ftfy --quiet; then
         echo -e "${RED}ERROR: Failed to install ML dependencies${NC}"
         exit 1
     fi
