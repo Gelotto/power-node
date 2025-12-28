@@ -109,7 +109,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Video.MaxFPS = 24
 	}
 	if cfg.Video.MaxWidth == 0 {
-		cfg.Video.MaxWidth = 480
+		cfg.Video.MaxWidth = 832 // 480p widescreen (16:9 aspect ratio)
 	}
 	if cfg.Video.MaxHeight == 0 {
 		cfg.Video.MaxHeight = 480

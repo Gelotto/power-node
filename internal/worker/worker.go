@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -608,6 +609,15 @@ func (w *Worker) detectVideoCapability() {
 	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
 		w.supportsVideo = false
 		log.Printf("Video support: DISABLED (Wan model not found at %s)", modelPath)
+		return
+	}
+
+	// Check 2b: Verify model_index.json exists (required for Diffusers pipeline)
+	modelIndexPath := filepath.Join(modelPath, "model_index.json")
+	if _, err := os.Stat(modelIndexPath); os.IsNotExist(err) {
+		w.supportsVideo = false
+		log.Printf("Video support: DISABLED (model_index.json not found - incomplete model at %s)", modelPath)
+		log.Printf("  Tip: Download the Diffusers-compatible version: Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
 		return
 	}
 

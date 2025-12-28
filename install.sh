@@ -473,10 +473,11 @@ snapshot_download(
     # Download Wan2.1 video model (optional - for video generation)
     echo ""
     echo -e "${CYAN}Video Generation Support (optional):${NC}"
-    echo "  The Wan2.1 model enables AI video generation (~2.5GB download)."
+    echo "  The Wan2.1-Diffusers model enables AI video generation (~29GB download)."
+    echo "  This requires significant disk space and download time."
     echo ""
 
-    WAN_MODEL_DIR="$INSTALL_DIR/models/Wan2.1-T2V-1.3B"
+    WAN_MODEL_DIR="$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers"
     DOWNLOAD_WAN=false
 
     # Check if --with-video flag was passed
@@ -497,9 +498,10 @@ snapshot_download(
 
     if [ "$DOWNLOAD_WAN" = true ]; then
         if [ -d "$WAN_MODEL_DIR" ] && [ -f "$WAN_MODEL_DIR/model_index.json" ]; then
-            echo -e "  ${GREEN}✓${NC} Wan2.1-T2V-1.3B (cached)"
+            echo -e "  ${GREEN}✓${NC} Wan2.1-T2V-1.3B-Diffusers (cached)"
         else
-            echo "  Downloading Wan2.1-T2V-1.3B video model (~2.5GB)..."
+            echo "  Downloading Wan2.1-T2V-1.3B-Diffusers video model (~29GB)..."
+            echo "  This may take a while depending on your internet connection."
             source "$INSTALL_DIR/venv/bin/activate"
             if ! pip install huggingface_hub --quiet 2>/dev/null; then
                 echo -e "${YELLOW}  Warning: Failed to install huggingface_hub${NC}"
@@ -507,16 +509,24 @@ snapshot_download(
             python3 -c "
 from huggingface_hub import snapshot_download
 snapshot_download(
-    'Wan-AI/Wan2.1-T2V-1.3B',
+    'Wan-AI/Wan2.1-T2V-1.3B-Diffusers',
     local_dir='$WAN_MODEL_DIR',
     local_dir_use_symlinks=False
 )
 "
-            if [ $? -eq 0 ]; then
-                echo -e "  ${GREEN}✓${NC} Wan2.1 video model installed"
+            DOWNLOAD_EXIT_CODE=$?
+
+            # Validate the download was successful
+            if [ $DOWNLOAD_EXIT_CODE -eq 0 ] && [ -f "$WAN_MODEL_DIR/model_index.json" ]; then
+                echo -e "  ${GREEN}✓${NC} Wan2.1-Diffusers video model installed successfully"
             else
-                echo -e "${YELLOW}  Warning: Failed to download Wan2.1 model${NC}"
+                echo -e "${RED}  ✗ Wan2.1 model download incomplete or failed${NC}"
+                if [ ! -f "$WAN_MODEL_DIR/model_index.json" ]; then
+                    echo -e "${YELLOW}    Missing: model_index.json${NC}"
+                fi
                 echo "  Video generation will not be available."
+                echo "  You can try downloading manually:"
+                echo "    huggingface-cli download Wan-AI/Wan2.1-T2V-1.3B-Diffusers --local-dir $WAN_MODEL_DIR"
             fi
             deactivate
         fi
@@ -789,16 +799,25 @@ class InferenceService:
         if seed == -1:
             seed = random.randint(0, 2**31 - 1)
 
-        # Check if Wan model is available
-        wan_model_path = os.environ.get("WAN_MODEL_PATH", os.path.expanduser("~/.power-node/models/Wan2.1-T2V-1.3B"))
+        # Check if Wan model is available (must be Diffusers-compatible version)
+        wan_model_path = os.environ.get("WAN_MODEL_PATH", os.path.expanduser("~/.power-node/models/Wan2.1-T2V-1.3B-Diffusers"))
         if not os.path.exists(wan_model_path):
             raise FileNotFoundError(
                 f"Video model not found at {wan_model_path}. "
-                "Please install the Wan2.1 model for video generation."
+                "Please install the Wan2.1-Diffusers model for video generation."
+            )
+
+        # Validate model_index.json exists (required for Diffusers pipeline)
+        model_index_path = os.path.join(wan_model_path, "model_index.json")
+        if not os.path.exists(model_index_path):
+            raise FileNotFoundError(
+                f"Invalid model: model_index.json not found in {wan_model_path}. "
+                "Please download the Diffusers-compatible version: Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
             )
 
         try:
-            from diffusers import WanPipeline
+            from diffusers import WanPipeline, AutoencoderKLWan
+            from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepScheduler
         except ImportError:
             raise ImportError("Wan video generation requires diffusers>=0.32.0 with Wan support")
 
@@ -819,11 +838,27 @@ class InferenceService:
         sys.stderr.write(f"Loading Wan model from {wan_model_path}...\n")
         sys.stderr.flush()
 
-        # Load Wan pipeline
+        # Load VAE separately with float32 for better decoding quality (per HuggingFace docs)
+        vae = AutoencoderKLWan.from_pretrained(
+            wan_model_path,
+            subfolder="vae",
+            torch_dtype=torch.float32,
+        )
+
+        # Load Wan pipeline with custom VAE
         video_pipe = WanPipeline.from_pretrained(
             wan_model_path,
+            vae=vae,
             torch_dtype=torch.bfloat16,
         )
+
+        # Configure scheduler with flow_shift (3.0 for 480p, 5.0 for 720p)
+        flow_shift = 3.0  # Using 480p resolution
+        video_pipe.scheduler = UniPCMultistepScheduler.from_config(
+            video_pipe.scheduler.config,
+            flow_shift=flow_shift
+        )
+
         video_pipe.enable_model_cpu_offload()
 
         generator = torch.Generator("cuda").manual_seed(seed)
@@ -1043,15 +1078,15 @@ python:
     HF_HOME: "$INSTALL_DIR/models/.cache"
 EOF
 
-# Only add video config if the video model was downloaded
-if [ -d "$INSTALL_DIR/models/Wan2.1-T2V-1.3B" ]; then
+# Only add video config if the video model was downloaded (check for model_index.json)
+if [ -f "$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers/model_index.json" ]; then
     # Add WAN_MODEL_PATH to python.env for Python script
-    echo "    WAN_MODEL_PATH: \"$INSTALL_DIR/models/Wan2.1-T2V-1.3B\"" >> "$INSTALL_DIR/config/config.yaml"
+    echo "    WAN_MODEL_PATH: \"$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers\"" >> "$INSTALL_DIR/config/config.yaml"
     # Add video.model_path section for Go worker to detect video capability
     cat >> "$INSTALL_DIR/config/config.yaml" << VIDEOEOF
 
 video:
-  model_path: "$INSTALL_DIR/models/Wan2.1-T2V-1.3B"
+  model_path: "$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers"
 VIDEOEOF
 fi
 fi
