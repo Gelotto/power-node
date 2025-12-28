@@ -1022,8 +1022,12 @@ python:
   env:
     PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     HF_HOME: "$INSTALL_DIR/models/.cache"
-    WAN_MODEL_PATH: "$INSTALL_DIR/models/Wan2.1-T2V-1.3B"
 EOF
+
+# Only add WAN_MODEL_PATH if the video model was downloaded
+if [ -d "$INSTALL_DIR/models/Wan2.1-T2V-1.3B" ]; then
+    echo "    WAN_MODEL_PATH: \"$INSTALL_DIR/models/Wan2.1-T2V-1.3B\"" >> "$INSTALL_DIR/config/config.yaml"
+fi
 fi
 
 # =============================================================================
