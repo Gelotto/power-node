@@ -139,11 +139,18 @@ func (c *APIClient) StartProcessing(ctx context.Context, workerID, jobID string)
 }
 
 // CompleteJob marks a job as completed with the result
-func (c *APIClient) CompleteJob(ctx context.Context, workerID, jobID, imageData string, generationMs int) error {
+// data: base64-encoded image (PNG) or video (MP4) data
+// isVideo: true if this is a video result, false for image
+func (c *APIClient) CompleteJob(ctx context.Context, workerID, jobID, data string, isVideo bool, generationMs int) error {
+	dataField := "image_data"
+	if isVideo {
+		dataField = "video_data"
+	}
+
 	reqBody := map[string]interface{}{
 		"worker_id":     workerID,
 		"job_id":        jobID,
-		"image_data":    imageData,
+		dataField:       data,
 		"generation_ms": generationMs,
 	}
 

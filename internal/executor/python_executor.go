@@ -16,17 +16,18 @@ import (
 	"github.com/Gelotto/power-node/internal/models"
 )
 
-// PythonExecutor manages the Python subprocess for image generation
+// PythonExecutor manages the Python subprocess for image and video generation
 type PythonExecutor struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    *bufio.Reader
-	stderr    io.ReadCloser
-	reqID     uint64
-	responses map[uint64]chan *models.JSONRPCResponse
-	mu        sync.Mutex
-	ctx       context.Context
-	cancel    context.CancelFunc
+	cmd            *exec.Cmd
+	stdin          io.WriteCloser
+	stdout         *bufio.Reader
+	stderr         io.ReadCloser
+	reqID          uint64
+	responses      map[uint64]chan *models.JSONRPCResponse
+	videoResponses map[uint64]chan *models.JSONRPCVideoResponse
+	mu             sync.Mutex
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
 // NewPythonExecutor creates a new Python executor
@@ -34,9 +35,10 @@ func NewPythonExecutor(pythonExec, scriptPath string, scriptArgs []string, env m
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &PythonExecutor{
-		responses: make(map[uint64]chan *models.JSONRPCResponse),
-		ctx:       ctx,
-		cancel:    cancel,
+		responses:      make(map[uint64]chan *models.JSONRPCResponse),
+		videoResponses: make(map[uint64]chan *models.JSONRPCVideoResponse),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 }
 
@@ -135,6 +137,62 @@ func (e *PythonExecutor) Generate(ctx context.Context, req *models.GenerateReque
 	}
 }
 
+// GenerateVideo sends a video generation request to Python and waits for response
+// Video generation has a longer timeout (30 minutes) due to the complexity of video generation
+func (e *PythonExecutor) GenerateVideo(ctx context.Context, req *models.GenerateVideoRequest) (*models.GenerateVideoResponse, error) {
+	reqID := atomic.AddUint64(&e.reqID, 1)
+
+	respChan := make(chan *models.JSONRPCVideoResponse, 1)
+	e.mu.Lock()
+	e.videoResponses[reqID] = respChan
+	e.mu.Unlock()
+
+	defer func() {
+		e.mu.Lock()
+		delete(e.videoResponses, reqID)
+		e.mu.Unlock()
+		close(respChan)
+	}()
+
+	jsonReq := models.JSONRPCVideoRequest{
+		ID:     reqID,
+		Method: "generate_video",
+		Params: *req,
+	}
+
+	reqData, err := json.Marshal(jsonReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal video request: %w", err)
+	}
+
+	log.Printf("Sending video request to Python: %s", string(reqData))
+
+	if _, err := e.stdin.Write(append(reqData, '\n')); err != nil {
+		return nil, fmt.Errorf("failed to write to Python stdin: %w", err)
+	}
+
+	// Video generation timeout: 30 minutes (videos take much longer than images)
+	select {
+	case resp := <-respChan:
+		if resp == nil {
+			return nil, fmt.Errorf("received nil video response")
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("Python video error: %s", *resp.Error)
+		}
+		if resp.Result == nil {
+			return nil, fmt.Errorf("received empty video result")
+		}
+		return resp.Result, nil
+
+	case <-ctx.Done():
+		return nil, fmt.Errorf("video request cancelled: %w", ctx.Err())
+
+	case <-time.After(1800 * time.Second):
+		return nil, fmt.Errorf("video generation timeout (30 minutes)")
+	}
+}
+
 func (e *PythonExecutor) handleResponses() {
 	for {
 		select {
@@ -153,25 +211,49 @@ func (e *PythonExecutor) handleResponses() {
 
 		log.Printf("Received from Python: %s", line)
 
-		var resp models.JSONRPCResponse
-		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		// Try to parse as a generic response first to get the ID
+		var baseResp struct {
+			ID     uint64           `json:"id"`
+			Result *json.RawMessage `json:"result"`
+			Error  *string          `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &baseResp); err != nil {
 			log.Printf("Failed to decode Python response: %v - %s", err, line)
 			continue
 		}
 
+		// Check if this is a video response or image response based on response content
 		e.mu.Lock()
-		respChan, ok := e.responses[resp.ID]
+		videoRespChan, isVideo := e.videoResponses[baseResp.ID]
+		imageRespChan, isImage := e.responses[baseResp.ID]
 		e.mu.Unlock()
 
-		if !ok {
-			log.Printf("Received response for unknown request ID: %d", resp.ID)
-			continue
-		}
-
-		select {
-		case respChan <- &resp:
-		default:
-			log.Printf("Response channel full for request ID: %d", resp.ID)
+		if isVideo {
+			// Parse as video response
+			var resp models.JSONRPCVideoResponse
+			if err := json.Unmarshal([]byte(line), &resp); err != nil {
+				log.Printf("Failed to decode video response: %v", err)
+				continue
+			}
+			select {
+			case videoRespChan <- &resp:
+			default:
+				log.Printf("Video response channel full for request ID: %d", resp.ID)
+			}
+		} else if isImage {
+			// Parse as image response
+			var resp models.JSONRPCResponse
+			if err := json.Unmarshal([]byte(line), &resp); err != nil {
+				log.Printf("Failed to decode image response: %v", err)
+				continue
+			}
+			select {
+			case imageRespChan <- &resp:
+			default:
+				log.Printf("Image response channel full for request ID: %d", resp.ID)
+			}
+		} else {
+			log.Printf("Received response for unknown request ID: %d", baseResp.ID)
 		}
 	}
 }

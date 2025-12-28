@@ -53,6 +53,27 @@ if ! command -v curl &> /dev/null; then
     exit 1
 fi
 
+# Check for ffmpeg (required for video encoding)
+if ! command -v ffmpeg &> /dev/null; then
+    echo -e "${YELLOW}  ffmpeg not found. Installing...${NC}"
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+    elif command -v dnf &> /dev/null; then
+        sudo dnf install -y ffmpeg
+    elif command -v pacman &> /dev/null; then
+        sudo pacman -S --noconfirm ffmpeg
+    elif command -v zypper &> /dev/null; then
+        sudo zypper install -y ffmpeg
+    else
+        echo -e "${YELLOW}  Warning: Could not install ffmpeg automatically.${NC}"
+        echo "  Video generation will require ffmpeg. Install manually."
+    fi
+
+    if command -v ffmpeg &> /dev/null; then
+        echo -e "${GREEN}  ✓ ffmpeg installed${NC}"
+    fi
+fi
+
 # Check if venv module is available, auto-install if missing
 if ! python3 -c "import venv" 2>/dev/null; then
     echo -e "${YELLOW}  Python venv module not found. Installing...${NC}"
@@ -313,7 +334,8 @@ else
         echo -e "${RED}ERROR: Failed to install PyTorch${NC}"
         exit 1
     fi
-    if ! pip install transformers diffusers safetensors accelerate tqdm pillow --quiet; then
+    # Pin diffusers>=0.32.0 for Wan video model support
+    if ! pip install transformers 'diffusers>=0.32.0' safetensors accelerate tqdm pillow --quiet; then
         echo -e "${RED}ERROR: Failed to install ML dependencies${NC}"
         exit 1
     fi
@@ -430,6 +452,59 @@ snapshot_download(
         "$HF_BASE/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors" \
         "$INSTALL_DIR/models/vae/ae.safetensors" \
         "VAE"
+
+    # Download Wan2.1 video model (optional - for video generation)
+    echo ""
+    echo -e "${CYAN}Video Generation Support (optional):${NC}"
+    echo "  The Wan2.1 model enables AI video generation (~2.5GB download)."
+    echo ""
+
+    WAN_MODEL_DIR="$INSTALL_DIR/models/Wan2.1-T2V-1.3B"
+    DOWNLOAD_WAN=false
+
+    # Check if we can read from terminal
+    if read -p "  Download Wan2.1 video model? (y/N) " -r < /dev/tty 2>/dev/null; then
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            DOWNLOAD_WAN=true
+        fi
+    else
+        # Non-interactive mode - show manual instructions
+        echo "  [Non-interactive mode - skipping video model]"
+        echo "  To install video support later, run:"
+        echo "    $INSTALL_DIR/venv/bin/python3 -c \\"
+        echo "      \"from huggingface_hub import snapshot_download; \\"
+        echo "      snapshot_download('Wan-AI/Wan2.1-T2V-1.3B', local_dir='$WAN_MODEL_DIR')\""
+    fi
+
+    if [ "$DOWNLOAD_WAN" = true ]; then
+        if [ -d "$WAN_MODEL_DIR" ] && [ -f "$WAN_MODEL_DIR/model_index.json" ]; then
+            echo -e "  ${GREEN}✓${NC} Wan2.1-T2V-1.3B (cached)"
+        else
+            echo "  Downloading Wan2.1-T2V-1.3B video model (~2.5GB)..."
+            source "$INSTALL_DIR/venv/bin/activate"
+            if ! pip install huggingface_hub --quiet 2>/dev/null; then
+                echo -e "${YELLOW}  Warning: Failed to install huggingface_hub${NC}"
+            fi
+            python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download(
+    'Wan-AI/Wan2.1-T2V-1.3B',
+    local_dir='$WAN_MODEL_DIR',
+    local_dir_use_symlinks=False
+)
+"
+            if [ $? -eq 0 ]; then
+                echo -e "  ${GREEN}✓${NC} Wan2.1 video model installed"
+            else
+                echo -e "${YELLOW}  Warning: Failed to download Wan2.1 model${NC}"
+                echo "  Video generation will not be available."
+            fi
+            deactivate
+        fi
+    else
+        echo ""
+        echo "  Skipping video model. You can install it later if needed."
+    fi
 fi
 
 echo -e "${GREEN}  ✓ Models ready${NC}"
@@ -543,11 +618,24 @@ class InferenceService:
         images[0].save(buf, format='PNG')
         return {"image_data": base64.b64encode(buf.getvalue()).decode(), "format": "png"}
 
+    def generate_video(self, prompt, width=832, height=480, duration_seconds=5, fps=24, total_frames=120, seed=-1, negative_prompt=None):
+        """Generate a video using Wan2GP (if available)"""
+        # Video generation requires Wan2GP model which is not included in GGUF mode
+        # Workers need to install video support separately
+        raise NotImplementedError(
+            "Video generation not available in GGUF mode. "
+            "Video requires Wan2GP model installation. "
+            "Please use PyTorch mode with video support enabled."
+        )
+
     def handle_request(self, req):
         try:
-            if req.get("method") == "generate":
+            method = req.get("method")
+            if method == "generate":
                 return {"id": req.get("id", 0), "result": self.generate(**req.get("params", {})), "error": None}
-            return {"id": req.get("id", 0), "result": None, "error": f"Unknown method: {req.get('method')}"}
+            elif method == "generate_video":
+                return {"id": req.get("id", 0), "result": self.generate_video(**req.get("params", {})), "error": None}
+            return {"id": req.get("id", 0), "result": None, "error": f"Unknown method: {method}"}
         except Exception as e:
             return {"id": req.get("id", 0), "result": None, "error": str(e)}
 
@@ -664,11 +752,111 @@ class InferenceService:
 
         return {"image_data": base64.b64encode(buf.getvalue()).decode(), "format": "png"}
 
+    def generate_video(self, prompt, width=832, height=480, duration_seconds=5, fps=24, total_frames=120, seed=-1, negative_prompt=None):
+        """Generate a video using Wan2.1 model"""
+        import torch
+        import tempfile
+        import subprocess
+
+        sys.stderr.write(f"Generating video: {prompt[:50]}... ({duration_seconds}s @ {fps}fps)\n")
+        sys.stderr.flush()
+
+        if seed == -1:
+            seed = random.randint(0, 2**31 - 1)
+
+        # Check if Wan model is available
+        wan_model_path = os.environ.get("WAN_MODEL_PATH", os.path.expanduser("~/.power-node/models/Wan2.1-T2V-1.3B"))
+        if not os.path.exists(wan_model_path):
+            raise FileNotFoundError(
+                f"Video model not found at {wan_model_path}. "
+                "Please install the Wan2.1 model for video generation."
+            )
+
+        try:
+            from diffusers import WanPipeline
+        except ImportError:
+            raise ImportError("Wan video generation requires diffusers>=0.32.0 with Wan support")
+
+        sys.stderr.write(f"Loading Wan model from {wan_model_path}...\n")
+        sys.stderr.flush()
+
+        # Load Wan pipeline
+        video_pipe = WanPipeline.from_pretrained(
+            wan_model_path,
+            torch_dtype=torch.bfloat16,
+        )
+        video_pipe.enable_model_cpu_offload()
+
+        generator = torch.Generator("cuda").manual_seed(seed)
+
+        # Generate video frames
+        sys.stderr.write("Generating video frames...\n")
+        sys.stderr.flush()
+
+        output = video_pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt or "",
+            width=width,
+            height=height,
+            num_frames=total_frames,
+            num_inference_steps=25,
+            guidance_scale=5.0,
+            generator=generator,
+        )
+
+        frames = output.frames[0]  # Get first batch
+        sys.stderr.write(f"Generated {len(frames)} frames\n")
+        sys.stderr.flush()
+
+        # Encode to MP4 using ffmpeg
+        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp_video:
+            tmp_path = tmp_video.name
+
+        # Export frames to video using export_to_video helper or manual ffmpeg
+        try:
+            from diffusers.utils import export_to_video
+            export_to_video(frames, tmp_path, fps=fps)
+        except ImportError:
+            # Manual ffmpeg encoding
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                for i, frame in enumerate(frames):
+                    frame.save(os.path.join(tmp_dir, f"frame_{i:04d}.png"))
+
+                subprocess.run([
+                    'ffmpeg', '-y',
+                    '-framerate', str(fps),
+                    '-i', os.path.join(tmp_dir, 'frame_%04d.png'),
+                    '-c:v', 'libx264',
+                    '-pix_fmt', 'yuv420p',
+                    '-crf', '23',
+                    tmp_path
+                ], check=True, capture_output=True)
+
+        # Read video file and encode to base64
+        with open(tmp_path, 'rb') as f:
+            video_data = base64.b64encode(f.read()).decode()
+
+        # Cleanup
+        os.unlink(tmp_path)
+        del video_pipe
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return {
+            "video_data": video_data,
+            "format": "mp4",
+            "frames_generated": len(frames),
+            "duration_seconds": duration_seconds
+        }
+
     def handle_request(self, req):
         try:
-            if req.get("method") == "generate":
+            method = req.get("method")
+            if method == "generate":
                 return {"id": req.get("id", 0), "result": self.generate(**req.get("params", {})), "error": None}
-            return {"id": req.get("id", 0), "result": None, "error": f"Unknown method: {req.get('method')}"}
+            elif method == "generate_video":
+                return {"id": req.get("id", 0), "result": self.generate_video(**req.get("params", {})), "error": None}
+            return {"id": req.get("id", 0), "result": None, "error": f"Unknown method: {method}"}
         except Exception as e:
             return {"id": req.get("id", 0), "result": None, "error": str(e)}
 
@@ -792,6 +980,7 @@ python:
   env:
     PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     HF_HOME: "$INSTALL_DIR/models/.cache"
+    WAN_MODEL_PATH: "$INSTALL_DIR/models/Wan2.1-T2V-1.3B"
 EOF
 fi
 

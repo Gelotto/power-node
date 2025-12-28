@@ -307,13 +307,23 @@ func (w *Worker) restartPython() error {
 	return nil
 }
 
-// processJob processes a single job
+// processJob processes a single job (routes to image or video processing)
 func (w *Worker) processJob(ctx context.Context, job *models.Job) {
 	// Track that we're processing a job (for pause coordination)
 	w.setProcessingJob(true)
 	defer w.setProcessingJob(false)
 
-	log.Printf("Processing job %s...", job.ID)
+	// Route based on job type
+	if job.IsVideoJob() {
+		w.processVideoJob(ctx, job)
+	} else {
+		w.processImageJob(ctx, job)
+	}
+}
+
+// processImageJob processes an image generation job
+func (w *Worker) processImageJob(ctx context.Context, job *models.Job) {
+	log.Printf("Processing image job %s...", job.ID)
 	startTime := time.Now()
 
 	if err := w.apiClient.StartProcessing(ctx, w.id, job.ID); err != nil {
@@ -330,7 +340,7 @@ func (w *Worker) processJob(ctx context.Context, job *models.Job) {
 
 	result, err := w.pythonExec.Generate(ctx, genReq)
 	if err != nil {
-		log.Printf("Generation failed for job %s: %v", job.ID, err)
+		log.Printf("Image generation failed for job %s: %v", job.ID, err)
 		if err := w.apiClient.FailJob(ctx, w.id, job.ID, err.Error()); err != nil {
 			log.Printf("Failed to report job failure: %v", err)
 		}
@@ -339,15 +349,68 @@ func (w *Worker) processJob(ctx context.Context, job *models.Job) {
 
 	elapsed := time.Since(startTime)
 	generationMs := int(elapsed.Milliseconds())
-	log.Printf("Generation completed in %.2f seconds", elapsed.Seconds())
+	log.Printf("Image generation completed in %.2f seconds", elapsed.Seconds())
 
-	log.Printf("Uploading result for job %s...", job.ID)
-	if err := w.apiClient.CompleteJob(ctx, w.id, job.ID, result.ImageData, generationMs); err != nil {
+	log.Printf("Uploading image result for job %s...", job.ID)
+	if err := w.apiClient.CompleteJob(ctx, w.id, job.ID, result.ImageData, false, generationMs); err != nil {
 		log.Printf("Failed to complete job %s: %v", job.ID, err)
 		return
 	}
 
-	log.Printf("Job %s completed successfully!", job.ID)
+	log.Printf("Image job %s completed successfully!", job.ID)
+}
+
+// processVideoJob processes a video generation job
+func (w *Worker) processVideoJob(ctx context.Context, job *models.Job) {
+	log.Printf("Processing video job %s...", job.ID)
+	startTime := time.Now()
+
+	if err := w.apiClient.StartProcessing(ctx, w.id, job.ID); err != nil {
+		log.Printf("Failed to notify processing start for job %s: %v", job.ID, err)
+	}
+
+	// Calculate total frames from duration and FPS
+	durationSeconds := 5 // Default
+	if job.DurationSeconds != nil {
+		durationSeconds = *job.DurationSeconds
+	}
+	fps := 24 // Default
+	if job.FPS != nil {
+		fps = *job.FPS
+	}
+	totalFrames := durationSeconds * fps
+
+	genReq := &models.GenerateVideoRequest{
+		Prompt:          job.Prompt,
+		NegativePrompt:  job.NegativePrompt,
+		Width:           job.Width,
+		Height:          job.Height,
+		DurationSeconds: durationSeconds,
+		FPS:             fps,
+		TotalFrames:     totalFrames,
+		Seed:            job.Seed,
+	}
+
+	result, err := w.pythonExec.GenerateVideo(ctx, genReq)
+	if err != nil {
+		log.Printf("Video generation failed for job %s: %v", job.ID, err)
+		if err := w.apiClient.FailJob(ctx, w.id, job.ID, err.Error()); err != nil {
+			log.Printf("Failed to report job failure: %v", err)
+		}
+		return
+	}
+
+	elapsed := time.Since(startTime)
+	generationMs := int(elapsed.Milliseconds())
+	log.Printf("Video generation completed in %.2f seconds (%d frames)", elapsed.Seconds(), result.FramesGenerated)
+
+	log.Printf("Uploading video result for job %s...", job.ID)
+	if err := w.apiClient.CompleteJob(ctx, w.id, job.ID, result.VideoData, true, generationMs); err != nil {
+		log.Printf("Failed to complete job %s: %v", job.ID, err)
+		return
+	}
+
+	log.Printf("Video job %s completed successfully!", job.ID)
 }
 
 // heartbeatLoop sends periodic heartbeats to the backend
