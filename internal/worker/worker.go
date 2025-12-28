@@ -425,6 +425,14 @@ func (w *Worker) processVideoJob(ctx context.Context, job *models.Job) {
 	// Ensure callback is cleared when done (avoid memory leaks / stale callbacks)
 	defer w.pythonExec.SetProgressCallback(nil)
 
+	// Pass video inference steps from job (set by backend based on tier)
+	// Default to 25 if not specified (for backwards compatibility)
+	var videoSteps *int
+	if job.Steps > 0 {
+		steps := job.Steps
+		videoSteps = &steps
+	}
+
 	genReq := &models.GenerateVideoRequest{
 		Prompt:          job.Prompt,
 		NegativePrompt:  job.NegativePrompt,
@@ -434,6 +442,7 @@ func (w *Worker) processVideoJob(ctx context.Context, job *models.Job) {
 		FPS:             fps,
 		TotalFrames:     totalFrames,
 		Seed:            job.Seed,
+		Steps:           videoSteps, // Pass steps to Python (Basic=20, Pro=35, Premium=50)
 	}
 
 	result, err := w.pythonExec.GenerateVideo(ctx, genReq)

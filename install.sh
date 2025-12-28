@@ -788,13 +788,27 @@ class InferenceService:
 
         return {"image_data": base64.b64encode(buf.getvalue()).decode(), "format": "png"}
 
-    def generate_video(self, prompt, width=832, height=480, duration_seconds=5, fps=24, total_frames=120, seed=-1, negative_prompt=None):
+    def generate_video(self, prompt, width=832, height=480, duration_seconds=5, fps=24, total_frames=120, seed=-1, negative_prompt=None, steps=None, guidance_scale=None):
         """Generate a video using Wan2.1 model"""
         import torch
         import tempfile
         import subprocess
 
-        sys.stderr.write(f"Generating video: {prompt[:50]}... ({duration_seconds}s @ {fps}fps)\n")
+        # Default inference steps based on tier (can be overridden by caller)
+        # Basic=20, Pro=35, Premium=50 (set by backend based on tier)
+        num_inference_steps = steps if steps is not None else 25
+        cfg_scale = guidance_scale if guidance_scale is not None else 5.0
+
+        # Default negative prompt for Wan2.1 (improves quality significantly)
+        DEFAULT_NEGATIVE_PROMPT = (
+            "Bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, "
+            "images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, "
+            "incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, "
+            "misshapen limbs, fused fingers, still picture, messy background, walking backwards"
+        )
+        video_negative_prompt = negative_prompt if negative_prompt else DEFAULT_NEGATIVE_PROMPT
+
+        sys.stderr.write(f"Generating video: {prompt[:50]}... ({duration_seconds}s @ {fps}fps, {num_inference_steps} steps, cfg={cfg_scale})\n")
         sys.stderr.flush()
 
         if seed == -1:
@@ -868,8 +882,6 @@ class InferenceService:
         sys.stderr.write("Generating video frames...\n")
         sys.stderr.flush()
 
-        num_inference_steps = 25
-
         # Progress callback that emits JSON to stdout for Go to read
         def progress_callback(pipeline, step, timestep, callback_kwargs):
             # Calculate progress percentage based on denoising step (0-indexed)
@@ -891,12 +903,12 @@ class InferenceService:
 
         output = video_pipe(
             prompt=prompt,
-            negative_prompt=negative_prompt or "",
+            negative_prompt=video_negative_prompt,
             width=width,
             height=height,
             num_frames=total_frames,
             num_inference_steps=num_inference_steps,
-            guidance_scale=5.0,
+            guidance_scale=cfg_scale,
             generator=generator,
             callback_on_step_end=progress_callback,
         )
@@ -932,7 +944,7 @@ class InferenceService:
                     '-i', os.path.join(tmp_dir, 'frame_%04d.png'),
                     '-c:v', 'libx264',
                     '-pix_fmt', 'yuv420p',
-                    '-crf', '23',
+                    '-crf', '18',  # Higher quality encoding (was 23)
                     tmp_path
                 ], check=True, capture_output=True)
 

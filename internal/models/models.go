@@ -75,14 +75,16 @@ type GenerateResponse struct {
 
 // GenerateVideoRequest is sent to Python subprocess for video generation
 type GenerateVideoRequest struct {
-	Prompt          string  `json:"prompt"`
-	NegativePrompt  *string `json:"negative_prompt,omitempty"`
-	Width           int     `json:"width"`
-	Height          int     `json:"height"`
-	DurationSeconds int     `json:"duration_seconds"`
-	FPS             int     `json:"fps"`
-	TotalFrames     int     `json:"total_frames"`
-	Seed            *int64  `json:"seed,omitempty"`
+	Prompt          string   `json:"prompt"`
+	NegativePrompt  *string  `json:"negative_prompt,omitempty"`
+	Width           int      `json:"width"`
+	Height          int      `json:"height"`
+	DurationSeconds int      `json:"duration_seconds"`
+	FPS             int      `json:"fps"`
+	TotalFrames     int      `json:"total_frames"`
+	Seed            *int64   `json:"seed,omitempty"`
+	Steps           *int     `json:"steps,omitempty"`           // Inference steps (default: 25, Basic=20, Pro=35, Premium=50)
+	GuidanceScale   *float64 `json:"guidance_scale,omitempty"`  // CFG scale (default: 5.0)
 }
 
 // GenerateVideoResponse is received from Python subprocess for video generation
