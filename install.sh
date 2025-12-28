@@ -352,7 +352,8 @@ else
         exit 1
     fi
     # Pin diffusers>=0.32.0 for Wan video model support
-    if ! pip install transformers 'diffusers>=0.32.0' safetensors accelerate tqdm pillow ftfy --quiet; then
+    # imageio + imageio-ffmpeg required for video export (export_to_video)
+    if ! pip install transformers 'diffusers>=0.32.0' safetensors accelerate tqdm pillow ftfy imageio imageio-ffmpeg --quiet; then
         echo -e "${RED}ERROR: Failed to install ML dependencies${NC}"
         exit 1
     fi
@@ -912,10 +913,17 @@ class InferenceService:
         try:
             from diffusers.utils import export_to_video
             export_to_video(frames, tmp_path, fps=fps)
-        except ImportError:
-            # Manual ffmpeg encoding
+        except Exception as e:
+            # Fallback to manual ffmpeg encoding if export_to_video fails
+            sys.stderr.write(f"export_to_video failed ({e}), using ffmpeg fallback\\n")
+            sys.stderr.flush()
+            from PIL import Image
+            import numpy as np
             with tempfile.TemporaryDirectory() as tmp_dir:
                 for i, frame in enumerate(frames):
+                    # Convert numpy array to PIL Image if needed
+                    if isinstance(frame, np.ndarray):
+                        frame = Image.fromarray(frame)
                     frame.save(os.path.join(tmp_dir, f"frame_{i:04d}.png"))
 
                 subprocess.run([
