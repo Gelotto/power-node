@@ -25,10 +25,11 @@ func NewAPIClient(baseURL, apiKey string) *APIClient {
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			// 5 minute timeout to handle large video uploads (up to 100MB base64)
+			Timeout: 5 * time.Minute,
 			Transport: &http.Transport{
 				TLSHandshakeTimeout:   10 * time.Second,
-				ResponseHeaderTimeout: 20 * time.Second,
+				ResponseHeaderTimeout: 4 * time.Minute, // Allow time for server to process video
 				IdleConnTimeout:       90 * time.Second,
 			},
 		},
@@ -53,6 +54,12 @@ type HeartbeatData struct {
 	GPUUtilization *int // Current GPU utilization (0-100)
 	GPUMemoryUsed  *int // Current GPU memory used (MB)
 	GPUTemperature *int // Current GPU temperature (Celsius)
+	// Video capability fields
+	SupportsVideo    *bool // Whether worker supports video generation
+	VideoMaxDuration *int  // Maximum video duration in seconds
+	VideoMaxFPS      *int  // Maximum video FPS
+	VideoMaxWidth    *int  // Maximum video width
+	VideoMaxHeight   *int  // Maximum video height
 }
 
 // Heartbeat sends a heartbeat to the backend
@@ -93,6 +100,22 @@ func (c *APIClient) Heartbeat(ctx context.Context, workerID, status string, data
 		}
 		if data.GPUTemperature != nil {
 			reqBody["gpu_temperature"] = *data.GPUTemperature
+		}
+		// Video capability fields
+		if data.SupportsVideo != nil {
+			reqBody["supports_video"] = *data.SupportsVideo
+		}
+		if data.VideoMaxDuration != nil {
+			reqBody["video_max_duration"] = *data.VideoMaxDuration
+		}
+		if data.VideoMaxFPS != nil {
+			reqBody["video_max_fps"] = *data.VideoMaxFPS
+		}
+		if data.VideoMaxWidth != nil {
+			reqBody["video_max_width"] = *data.VideoMaxWidth
+		}
+		if data.VideoMaxHeight != nil {
+			reqBody["video_max_height"] = *data.VideoMaxHeight
 		}
 	}
 

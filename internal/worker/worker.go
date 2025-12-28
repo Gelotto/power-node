@@ -35,6 +35,8 @@ type Worker struct {
 	pythonRunning   bool
 	processingJob   bool
 	processingJobMu sync.RWMutex
+	// Video capability
+	supportsVideo bool
 }
 
 // NewWorker creates a new worker
@@ -77,6 +79,9 @@ func (w *Worker) Start(ctx context.Context) error {
 		w.gpuInfo = caps.GPUModel
 		log.Printf("Detected GPU: %s", caps.String())
 	}
+
+	// Detect video capability
+	w.detectVideoCapability()
 
 	// Validate configuration before starting
 	if err := w.config.Validate(); err != nil {
@@ -315,6 +320,14 @@ func (w *Worker) processJob(ctx context.Context, job *models.Job) {
 
 	// Route based on job type
 	if job.IsVideoJob() {
+		// Validate video capability before processing
+		if !w.canProcessVideo() {
+			log.Printf("Cannot process video job %s: worker does not support video generation", job.ID)
+			if err := w.apiClient.FailJob(ctx, w.id, job.ID, "Worker does not support video generation"); err != nil {
+				log.Printf("Failed to report job failure: %v", err)
+			}
+			return
+		}
 		w.processVideoJob(ctx, job)
 	} else {
 		w.processImageJob(ctx, job)
@@ -467,6 +480,15 @@ func (w *Worker) buildHeartbeatData() *client.HeartbeatData {
 		data.GPUTemperature = &metrics.Temperature
 	}
 
+	// Add video capability information
+	data.SupportsVideo = &w.supportsVideo
+	if w.supportsVideo {
+		data.VideoMaxDuration = &w.config.Video.MaxDuration
+		data.VideoMaxFPS = &w.config.Video.MaxFPS
+		data.VideoMaxWidth = &w.config.Video.MaxWidth
+		data.VideoMaxHeight = &w.config.Video.MaxHeight
+	}
+
 	return data
 }
 
@@ -511,4 +533,61 @@ func (w *Worker) detectGPU() string {
 		gpu = gpu[:idx]
 	}
 	return gpu
+}
+
+// detectVideoCapability checks if this worker can generate videos
+func (w *Worker) detectVideoCapability() {
+	// Check if explicitly enabled/disabled in config
+	if w.config.Video.Enabled != nil {
+		w.supportsVideo = *w.config.Video.Enabled
+		if w.supportsVideo {
+			log.Printf("Video support: ENABLED (explicit config)")
+		} else {
+			log.Printf("Video support: DISABLED (explicit config)")
+		}
+		return
+	}
+
+	// Auto-detect based on:
+	// 1. PyTorch mode (GGUF doesn't support video)
+	// 2. Wan model path exists
+	// 3. Sufficient VRAM (8GB+)
+
+	// Check 1: Must be PyTorch mode
+	if w.capabilities != nil && w.capabilities.ServiceMode == "gguf" {
+		w.supportsVideo = false
+		log.Printf("Video support: DISABLED (GGUF mode - video requires PyTorch)")
+		return
+	}
+
+	// Check 2: Wan model path must be set and directory must exist
+	modelPath := w.config.Video.ModelPath
+	if modelPath == "" {
+		w.supportsVideo = false
+		log.Printf("Video support: DISABLED (WAN_MODEL_PATH not set)")
+		return
+	}
+
+	// Verify the model directory exists
+	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+		w.supportsVideo = false
+		log.Printf("Video support: DISABLED (Wan model not found at %s)", modelPath)
+		return
+	}
+
+	// Check 3: Sufficient VRAM (8GB minimum for Wan2.1)
+	if w.capabilities != nil && w.capabilities.VRAM < 8 {
+		w.supportsVideo = false
+		log.Printf("Video support: DISABLED (insufficient VRAM: %dGB < 8GB)", w.capabilities.VRAM)
+		return
+	}
+
+	// All checks passed
+	w.supportsVideo = true
+	log.Printf("Video support: ENABLED (Wan model found at %s)", modelPath)
+}
+
+// canProcessVideo checks if this worker can process video jobs
+func (w *Worker) canProcessVideo() bool {
+	return w.supportsVideo
 }

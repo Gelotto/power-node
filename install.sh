@@ -723,6 +723,12 @@ class InferenceService:
     def generate(self, prompt, width=1024, height=1024, steps=8, seed=-1):
         import torch
 
+        # Reload Z-Image model if it was unloaded for video generation
+        if self.pipe is None:
+            sys.stderr.write("Z-Image model not loaded, reloading...\n")
+            sys.stderr.flush()
+            self.initialize()
+
         sys.stderr.write(f"Generating: {prompt[:50]}...\n")
         sys.stderr.flush()
 
@@ -776,6 +782,20 @@ class InferenceService:
             from diffusers import WanPipeline
         except ImportError:
             raise ImportError("Wan video generation requires diffusers>=0.32.0 with Wan support")
+
+        # CRITICAL: Unload Z-Image model to free VRAM before loading Wan
+        # Without this, 16GB GPUs will OOM trying to load both models
+        if self.pipe is not None:
+            sys.stderr.write("Unloading Z-Image model to free VRAM...\n")
+            sys.stderr.flush()
+            del self.pipe
+            self.pipe = None
+            gc.collect()
+            torch.cuda.empty_cache()
+            import time
+            time.sleep(1)  # Allow GPU to fully release memory
+            sys.stderr.write("Z-Image model unloaded.\n")
+            sys.stderr.flush()
 
         sys.stderr.write(f"Loading Wan model from {wan_model_path}...\n")
         sys.stderr.flush()
