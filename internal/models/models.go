@@ -120,3 +120,13 @@ type JSONRPCVideoResponse struct {
 	Result *GenerateVideoResponse `json:"result"`
 	Error  *string                `json:"error"`
 }
+
+// ProgressMessage represents an intermediate progress update from Python during video generation
+// These messages are emitted via stdout between request and final response
+type ProgressMessage struct {
+	Type            string  `json:"type"`             // Always "progress"
+	Step            int     `json:"step"`             // Current denoising step (1-based)
+	TotalSteps      int     `json:"total_steps"`      // Total denoising steps
+	ProgressPercent float64 `json:"progress_percent"` // 0-100
+	FramesCompleted int     `json:"frames_completed"` // Estimated frames based on step progress
+}

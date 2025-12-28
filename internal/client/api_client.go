@@ -161,6 +161,17 @@ func (c *APIClient) StartProcessing(ctx context.Context, workerID, jobID string)
 	return c.post(ctx, "/api/v1/workers/processing", reqBody, nil)
 }
 
+// ReportProgress reports intermediate progress for video generation
+func (c *APIClient) ReportProgress(ctx context.Context, workerID, jobID string, framesCompleted int) error {
+	reqBody := map[string]interface{}{
+		"worker_id":        workerID,
+		"job_id":           jobID,
+		"frames_completed": framesCompleted,
+	}
+
+	return c.post(ctx, "/api/v1/workers/progress", reqBody, nil)
+}
+
 // CompleteJob marks a job as completed with the result
 // data: base64-encoded image (PNG) or video (MP4) data
 // isVideo: true if this is a video result, false for image

@@ -16,18 +16,23 @@ import (
 	"github.com/Gelotto/power-node/internal/models"
 )
 
+// ProgressCallback is called when a progress message is received during video generation
+type ProgressCallback func(msg models.ProgressMessage)
+
 // PythonExecutor manages the Python subprocess for image and video generation
 type PythonExecutor struct {
-	cmd            *exec.Cmd
-	stdin          io.WriteCloser
-	stdout         *bufio.Reader
-	stderr         io.ReadCloser
-	reqID          uint64
-	responses      map[uint64]chan *models.JSONRPCResponse
-	videoResponses map[uint64]chan *models.JSONRPCVideoResponse
-	mu             sync.Mutex
-	ctx            context.Context
-	cancel         context.CancelFunc
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	stdout           *bufio.Reader
+	stderr           io.ReadCloser
+	reqID            uint64
+	responses        map[uint64]chan *models.JSONRPCResponse
+	videoResponses   map[uint64]chan *models.JSONRPCVideoResponse
+	mu               sync.Mutex
+	ctx              context.Context
+	cancel           context.CancelFunc
+	progressCallback ProgressCallback // Callback for video progress updates
+	progressMu       sync.RWMutex     // Separate mutex for callback to avoid deadlock
 }
 
 // NewPythonExecutor creates a new Python executor
@@ -211,7 +216,36 @@ func (e *PythonExecutor) handleResponses() {
 
 		log.Printf("Received from Python: %s", line)
 
-		// Try to parse as a generic response first to get the ID
+		// First, check if this is a progress message (has "type" field, no "id" field)
+		// Progress messages are emitted during video generation and should be routed
+		// to the progress callback without blocking response channels
+		var msgType struct {
+			Type string  `json:"type"`
+			ID   *uint64 `json:"id"` // Pointer to detect absence vs zero
+		}
+		if err := json.Unmarshal([]byte(line), &msgType); err != nil {
+			log.Printf("Failed to decode Python message: %v - %s", err, line)
+			continue
+		}
+
+		// Route progress messages to callback (they have type="progress" and no id)
+		if msgType.Type == "progress" && msgType.ID == nil {
+			var progress models.ProgressMessage
+			if err := json.Unmarshal([]byte(line), &progress); err != nil {
+				log.Printf("Failed to decode progress message: %v - %s", err, line)
+				continue
+			}
+
+			// Invoke callback if set (non-blocking)
+			if cb := e.getProgressCallback(); cb != nil {
+				// Call in goroutine to avoid blocking response processing
+				go cb(progress)
+			}
+			continue // Don't try to route to response channels
+		}
+
+		// This is a final response (has an id field) - route to appropriate channel
+		// Try to parse as a generic response to get the ID
 		var baseResp struct {
 			ID     uint64           `json:"id"`
 			Result *json.RawMessage `json:"result"`
@@ -299,4 +333,20 @@ func (e *PythonExecutor) Stop() error {
 		}
 		return fmt.Errorf("Python process killed after timeout")
 	}
+}
+
+// SetProgressCallback sets the callback function for video progress updates.
+// The callback is invoked each time Python emits a progress message during video generation.
+// Set to nil to disable progress callbacks.
+func (e *PythonExecutor) SetProgressCallback(cb ProgressCallback) {
+	e.progressMu.Lock()
+	defer e.progressMu.Unlock()
+	e.progressCallback = cb
+}
+
+// getProgressCallback safely retrieves the current progress callback
+func (e *PythonExecutor) getProgressCallback() ProgressCallback {
+	e.progressMu.RLock()
+	defer e.progressMu.RUnlock()
+	return e.progressCallback
 }

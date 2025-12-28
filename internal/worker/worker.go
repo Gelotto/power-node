@@ -393,6 +393,37 @@ func (w *Worker) processVideoJob(ctx context.Context, job *models.Job) {
 	}
 	totalFrames := durationSeconds * fps
 
+	// Set up progress callback to report progress to backend
+	// We rate-limit progress reports to avoid overwhelming the API
+	var lastReportedFrames int
+	var progressMu sync.Mutex
+
+	w.pythonExec.SetProgressCallback(func(msg models.ProgressMessage) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+
+		// Report progress every 10+ frames or when nearly complete (>95%)
+		shouldReport := msg.FramesCompleted >= lastReportedFrames+10 || msg.ProgressPercent >= 95
+		if !shouldReport {
+			return
+		}
+
+		lastReportedFrames = msg.FramesCompleted
+		log.Printf("Video job %s progress: step %d/%d (%.1f%%), ~%d frames",
+			job.ID, msg.Step, msg.TotalSteps, msg.ProgressPercent, msg.FramesCompleted)
+
+		// Report to backend API (non-blocking goroutine, ignore errors)
+		go func(frames int) {
+			if err := w.apiClient.ReportProgress(ctx, w.id, job.ID, frames); err != nil {
+				// Log but don't fail - progress reporting is best-effort
+				log.Printf("Progress report failed (non-fatal): %v", err)
+			}
+		}(msg.FramesCompleted)
+	})
+
+	// Ensure callback is cleared when done (avoid memory leaks / stale callbacks)
+	defer w.pythonExec.SetProgressCallback(nil)
+
 	genReq := &models.GenerateVideoRequest{
 		Prompt:          job.Prompt,
 		NegativePrompt:  job.NegativePrompt,
@@ -411,6 +442,11 @@ func (w *Worker) processVideoJob(ctx context.Context, job *models.Job) {
 			log.Printf("Failed to report job failure: %v", err)
 		}
 		return
+	}
+
+	// Report final progress (100% complete)
+	if err := w.apiClient.ReportProgress(ctx, w.id, job.ID, totalFrames); err != nil {
+		log.Printf("Final progress report failed (non-fatal): %v", err)
 	}
 
 	elapsed := time.Since(startTime)

@@ -809,9 +809,30 @@ class InferenceService:
 
         generator = torch.Generator("cuda").manual_seed(seed)
 
-        # Generate video frames
+        # Generate video frames with progress callback
         sys.stderr.write("Generating video frames...\n")
         sys.stderr.flush()
+
+        num_inference_steps = 25
+
+        # Progress callback that emits JSON to stdout for Go to read
+        def progress_callback(pipeline, step, timestep, callback_kwargs):
+            # Calculate progress percentage based on denoising step (0-indexed)
+            progress_percent = (step + 1) / num_inference_steps * 100
+            # Estimate frames completed based on step progress
+            frames_estimated = int((step + 1) / num_inference_steps * total_frames)
+
+            # Emit progress message to stdout (Go reads this)
+            progress_msg = {
+                "type": "progress",
+                "step": step + 1,
+                "total_steps": num_inference_steps,
+                "progress_percent": progress_percent,
+                "frames_completed": frames_estimated
+            }
+            print(json.dumps(progress_msg), flush=True)
+
+            return callback_kwargs
 
         output = video_pipe(
             prompt=prompt,
@@ -819,9 +840,10 @@ class InferenceService:
             width=width,
             height=height,
             num_frames=total_frames,
-            num_inference_steps=25,
+            num_inference_steps=num_inference_steps,
             guidance_scale=5.0,
             generator=generator,
+            callback_on_step_end=progress_callback,
         )
 
         frames = output.frames[0]  # Get first batch
