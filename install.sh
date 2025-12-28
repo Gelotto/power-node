@@ -5,6 +5,23 @@
 #
 set -e
 
+# Parse command line arguments
+INSTALL_VIDEO=false
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --with-video) INSTALL_VIDEO=true ;;
+        --help|-h)
+            echo "Usage: install.sh [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --with-video    Install video generation support (Wan2.1 model)"
+            echo "  --help, -h      Show this help message"
+            exit 0
+            ;;
+    esac
+    shift
+done
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -462,18 +479,20 @@ snapshot_download(
     WAN_MODEL_DIR="$INSTALL_DIR/models/Wan2.1-T2V-1.3B"
     DOWNLOAD_WAN=false
 
+    # Check if --with-video flag was passed
+    if [ "$INSTALL_VIDEO" = true ]; then
+        echo -e "  ${GREEN}--with-video flag detected, installing video support${NC}"
+        DOWNLOAD_WAN=true
     # Check if we can read from terminal
-    if read -p "  Download Wan2.1 video model? (y/N) " -r < /dev/tty 2>/dev/null; then
+    elif read -p "  Download Wan2.1 video model? (y/N) " -r < /dev/tty 2>/dev/null; then
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             DOWNLOAD_WAN=true
         fi
     else
         # Non-interactive mode - show manual instructions
         echo "  [Non-interactive mode - skipping video model]"
-        echo "  To install video support later, run:"
-        echo "    $INSTALL_DIR/venv/bin/python3 -c \\"
-        echo "      \"from huggingface_hub import snapshot_download; \\"
-        echo "      snapshot_download('Wan-AI/Wan2.1-T2V-1.3B', local_dir='$WAN_MODEL_DIR')\""
+        echo "  To install video support, re-run with: --with-video flag"
+        echo "    curl -sSL https://raw.githubusercontent.com/Gelotto/power-node/main/install.sh | bash -s -- --with-video"
     fi
 
     if [ "$DOWNLOAD_WAN" = true ]; then
@@ -1024,9 +1043,16 @@ python:
     HF_HOME: "$INSTALL_DIR/models/.cache"
 EOF
 
-# Only add WAN_MODEL_PATH if the video model was downloaded
+# Only add video config if the video model was downloaded
 if [ -d "$INSTALL_DIR/models/Wan2.1-T2V-1.3B" ]; then
+    # Add WAN_MODEL_PATH to python.env for Python script
     echo "    WAN_MODEL_PATH: \"$INSTALL_DIR/models/Wan2.1-T2V-1.3B\"" >> "$INSTALL_DIR/config/config.yaml"
+    # Add video.model_path section for Go worker to detect video capability
+    cat >> "$INSTALL_DIR/config/config.yaml" << VIDEOEOF
+
+video:
+  model_path: "$INSTALL_DIR/models/Wan2.1-T2V-1.3B"
+VIDEOEOF
 fi
 fi
 
