@@ -364,6 +364,42 @@ deactivate
 echo -e "${GREEN}  ✓ Python environment ready${NC}"
 
 # =============================================================================
+# Install Face-Swap Dependencies
+# =============================================================================
+echo -e "\n${YELLOW}[6.5/7] Installing face-swap dependencies...${NC}"
+
+source "$INSTALL_DIR/venv/bin/activate"
+
+# Core dependencies (required)
+echo "  Installing core face-swap packages..."
+if pip install insightface==0.7.3 opencv-python-headless requests imageio imageio-ffmpeg --quiet 2>&1; then
+    echo -e "  ${GREEN}✓${NC} Core packages installed"
+else
+    echo -e "  ${YELLOW}!${NC} Core packages failed - face-swap may not work"
+fi
+
+# ONNX runtime (try GPU first, fallback to CPU)
+echo "  Installing ONNX runtime..."
+if pip install onnxruntime-gpu --quiet 2>&1; then
+    echo -e "  ${GREEN}✓${NC} ONNX Runtime (GPU)"
+elif pip install onnxruntime --quiet 2>&1; then
+    echo -e "  ${YELLOW}✓${NC} ONNX Runtime (CPU only - slower)"
+else
+    echo -e "  ${YELLOW}!${NC} ONNX Runtime failed - face-swap won't work"
+fi
+
+# GFPGAN for face enhancement (optional, may fail due to complex deps)
+echo "  Installing GFPGAN (face enhancement)..."
+if pip install gfpgan --quiet 2>&1; then
+    echo -e "  ${GREEN}✓${NC} GFPGAN installed"
+else
+    echo -e "  ${YELLOW}!${NC} GFPGAN failed - enhancement disabled (swap still works)"
+fi
+
+deactivate
+echo -e "${GREEN}  ✓ Face-swap dependencies ready${NC}"
+
+# =============================================================================
 # Download Models
 # =============================================================================
 echo -e "${YELLOW}[7/7] Downloading models...${NC}"
@@ -1221,6 +1257,7 @@ python:
     - "$VRAM_GB"
   env:
     PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    FACESWAP_MODEL_PATH: "$INSTALL_DIR/models/faceswap"
 EOF
 else
 # PyTorch configuration
@@ -1252,6 +1289,7 @@ python:
   env:
     PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     HF_HOME: "$INSTALL_DIR/models/.cache"
+    FACESWAP_MODEL_PATH: "$INSTALL_DIR/models/faceswap"
 EOF
 
 # Only add video config if the video model was downloaded (check for model_index.json)
@@ -1265,6 +1303,16 @@ video:
   model_path: "$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers"
 VIDEOEOF
 fi
+fi
+
+# Add faceswap config if models were downloaded
+if [ -f "$INSTALL_DIR/models/faceswap/inswapper_128.onnx" ]; then
+    cat >> "$INSTALL_DIR/config/config.yaml" << FACESWAPEOF
+
+faceswap:
+  enabled: true
+  model_path: "$INSTALL_DIR/models/faceswap"
+FACESWAPEOF
 fi
 
 # =============================================================================
@@ -1402,6 +1450,13 @@ echo ""
 echo -e "  ${BLUE}Installation:${NC}  $INSTALL_DIR"
 echo -e "  ${BLUE}GPU:${NC}           $GPU_NAME ($VRAM_GB GB)"
 echo -e "  ${BLUE}Mode:${NC}          $SERVICE_MODE"
+
+# Check face-swap availability
+FACESWAP_STATUS="Not installed"
+if [ -f "$INSTALL_DIR/models/faceswap/inswapper_128.onnx" ]; then
+    FACESWAP_STATUS="Enabled"
+fi
+echo -e "  ${BLUE}Face-Swap:${NC}     $FACESWAP_STATUS"
 echo ""
 
 # Offer to install systemd service
