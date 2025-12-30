@@ -1174,16 +1174,47 @@ fi
 
 chmod +x "$INSTALL_DIR/scripts/inference.py"
 
-# Copy faceswap module and download script for face-swap support
-SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+# =============================================================================
+# Install Face-Swap Module
+# =============================================================================
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")" 2>/dev/null || echo "")"
+GITHUB_RAW="https://raw.githubusercontent.com/Gelotto/power-node/main"
+
+# Create faceswap directory
+mkdir -p "$INSTALL_DIR/scripts/faceswap"
+
+# Try local copy first (when running ./install.sh from repo)
 if [ -d "$SCRIPT_DIR/scripts/faceswap" ]; then
-    cp -r "$SCRIPT_DIR/scripts/faceswap" "$INSTALL_DIR/scripts/"
-    echo -e "  ${GREEN}✓${NC} Installed faceswap module"
+    cp -r "$SCRIPT_DIR/scripts/faceswap"/* "$INSTALL_DIR/scripts/faceswap/"
+    echo -e "  ${GREEN}✓${NC} Installed faceswap module (local)"
+else
+    # Download from GitHub (when running via curl | bash)
+    echo "  Downloading faceswap module from GitHub..."
+    FACESWAP_FILES="__init__.py face_swap.py face_enhancer.py gif_processor.py torchvision_compat.py"
+    DOWNLOAD_OK=true
+    for file in $FACESWAP_FILES; do
+        if ! curl -sSL "$GITHUB_RAW/scripts/faceswap/$file" -o "$INSTALL_DIR/scripts/faceswap/$file" 2>/dev/null; then
+            DOWNLOAD_OK=false
+            break
+        fi
+    done
+    if [ "$DOWNLOAD_OK" = true ]; then
+        echo -e "  ${GREEN}✓${NC} Installed faceswap module (downloaded)"
+    else
+        echo -e "  ${YELLOW}!${NC} Failed to download faceswap module"
+    fi
 fi
 
+# Install download script
 if [ -f "$SCRIPT_DIR/scripts/download_faceswap_models.py" ]; then
     cp "$SCRIPT_DIR/scripts/download_faceswap_models.py" "$INSTALL_DIR/scripts/"
-    echo -e "  ${GREEN}✓${NC} Installed faceswap model download script"
+    echo -e "  ${GREEN}✓${NC} Installed faceswap model download script (local)"
+else
+    if curl -sSL "$GITHUB_RAW/scripts/download_faceswap_models.py" -o "$INSTALL_DIR/scripts/download_faceswap_models.py" 2>/dev/null; then
+        echo -e "  ${GREEN}✓${NC} Installed faceswap model download script (downloaded)"
+    else
+        echo -e "  ${YELLOW}!${NC} Failed to download faceswap model script"
+    fi
 fi
 
 # =============================================================================
