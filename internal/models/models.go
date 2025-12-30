@@ -6,14 +6,15 @@ import "time"
 type JobType string
 
 const (
-	JobTypeImage JobType = "image"
-	JobTypeVideo JobType = "video"
+	JobTypeImage    JobType = "image"
+	JobTypeVideo    JobType = "video"
+	JobTypeFaceSwap JobType = "face_swap"
 )
 
-// Job represents an image or video generation job from the backend
+// Job represents an image, video, or face-swap generation job from the backend
 type Job struct {
 	ID             string  `json:"id"`
-	Type           JobType `json:"type"` // "image" or "video"
+	Type           JobType `json:"type"` // "image", "video", or "face_swap"
 	Status         string  `json:"status"`
 	Prompt         string  `json:"prompt"`
 	NegativePrompt *string `json:"negative_prompt,omitempty"`
@@ -26,11 +27,24 @@ type Job struct {
 	DurationSeconds *int `json:"duration_seconds,omitempty"`
 	FPS             *int `json:"fps,omitempty"`
 	TotalFrames     *int `json:"total_frames,omitempty"`
+
+	// Face-swap specific fields
+	SourceImageURL *string `json:"source_image_url,omitempty"`
+	TargetImageURL *string `json:"target_image_url,omitempty"`
+	IsGIF          *bool   `json:"is_gif,omitempty"`
+	SwapAllFaces   *bool   `json:"swap_all_faces,omitempty"`
+	EnhanceResult  *bool   `json:"enhance_result,omitempty"`
+	GifFrameCount  *int    `json:"gif_frame_count,omitempty"`
 }
 
 // IsVideoJob returns true if this is a video generation job
 func (j *Job) IsVideoJob() bool {
 	return j.Type == JobTypeVideo
+}
+
+// IsFaceSwapJob returns true if this is a face-swap job
+func (j *Job) IsFaceSwapJob() bool {
+	return j.Type == JobTypeFaceSwap
 }
 
 // WorkerInfo represents worker registration/status
@@ -131,4 +145,35 @@ type ProgressMessage struct {
 	TotalSteps      int     `json:"total_steps"`      // Total denoising steps
 	ProgressPercent float64 `json:"progress_percent"` // 0-100
 	FramesCompleted int     `json:"frames_completed"` // Estimated frames based on step progress
+}
+
+// FaceSwapRequest is sent to Python subprocess for face swapping
+type FaceSwapRequest struct {
+	SourceImageURL string `json:"source_image_url"`
+	TargetImageURL string `json:"target_image_url"`
+	IsGIF          bool   `json:"is_gif"`
+	SwapAllFaces   bool   `json:"swap_all_faces"`
+	Enhance        bool   `json:"enhance"`
+	MaxFrames      int    `json:"max_frames,omitempty"`
+}
+
+// FaceSwapResponse is received from Python subprocess for face swapping
+type FaceSwapResponse struct {
+	ImageData     string `json:"image_data"`     // base64 encoded
+	Format        string `json:"format"`         // "jpeg" or "gif"
+	FramesSwapped int    `json:"frames_swapped"` // Number of frames processed (1 for images)
+}
+
+// JSONRPCFaceSwapRequest is the JSON-RPC request format for face swapping
+type JSONRPCFaceSwapRequest struct {
+	ID     uint64          `json:"id"`
+	Method string          `json:"method"` // "face_swap"
+	Params FaceSwapRequest `json:"params"`
+}
+
+// JSONRPCFaceSwapResponse is the JSON-RPC response format for face swapping
+type JSONRPCFaceSwapResponse struct {
+	ID     uint64            `json:"id"`
+	Result *FaceSwapResponse `json:"result"`
+	Error  *string           `json:"error"`
 }

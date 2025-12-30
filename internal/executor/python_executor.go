@@ -19,20 +19,21 @@ import (
 // ProgressCallback is called when a progress message is received during video generation
 type ProgressCallback func(msg models.ProgressMessage)
 
-// PythonExecutor manages the Python subprocess for image and video generation
+// PythonExecutor manages the Python subprocess for image, video, and face-swap generation
 type PythonExecutor struct {
-	cmd              *exec.Cmd
-	stdin            io.WriteCloser
-	stdout           *bufio.Reader
-	stderr           io.ReadCloser
-	reqID            uint64
-	responses        map[uint64]chan *models.JSONRPCResponse
-	videoResponses   map[uint64]chan *models.JSONRPCVideoResponse
-	mu               sync.Mutex
-	ctx              context.Context
-	cancel           context.CancelFunc
-	progressCallback ProgressCallback // Callback for video progress updates
-	progressMu       sync.RWMutex     // Separate mutex for callback to avoid deadlock
+	cmd               *exec.Cmd
+	stdin             io.WriteCloser
+	stdout            *bufio.Reader
+	stderr            io.ReadCloser
+	reqID             uint64
+	responses         map[uint64]chan *models.JSONRPCResponse
+	videoResponses    map[uint64]chan *models.JSONRPCVideoResponse
+	faceswapResponses map[uint64]chan *models.JSONRPCFaceSwapResponse
+	mu                sync.Mutex
+	ctx               context.Context
+	cancel            context.CancelFunc
+	progressCallback  ProgressCallback // Callback for video progress updates
+	progressMu        sync.RWMutex     // Separate mutex for callback to avoid deadlock
 }
 
 // NewPythonExecutor creates a new Python executor
@@ -40,10 +41,11 @@ func NewPythonExecutor(pythonExec, scriptPath string, scriptArgs []string, env m
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &PythonExecutor{
-		responses:      make(map[uint64]chan *models.JSONRPCResponse),
-		videoResponses: make(map[uint64]chan *models.JSONRPCVideoResponse),
-		ctx:            ctx,
-		cancel:         cancel,
+		responses:         make(map[uint64]chan *models.JSONRPCResponse),
+		videoResponses:    make(map[uint64]chan *models.JSONRPCVideoResponse),
+		faceswapResponses: make(map[uint64]chan *models.JSONRPCFaceSwapResponse),
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 }
 
@@ -198,6 +200,61 @@ func (e *PythonExecutor) GenerateVideo(ctx context.Context, req *models.Generate
 	}
 }
 
+// GenerateFaceSwap sends a face-swap request to Python and waits for response
+func (e *PythonExecutor) GenerateFaceSwap(ctx context.Context, req *models.FaceSwapRequest) (*models.FaceSwapResponse, error) {
+	reqID := atomic.AddUint64(&e.reqID, 1)
+
+	respChan := make(chan *models.JSONRPCFaceSwapResponse, 1)
+	e.mu.Lock()
+	e.faceswapResponses[reqID] = respChan
+	e.mu.Unlock()
+
+	defer func() {
+		e.mu.Lock()
+		delete(e.faceswapResponses, reqID)
+		e.mu.Unlock()
+		close(respChan)
+	}()
+
+	jsonReq := models.JSONRPCFaceSwapRequest{
+		ID:     reqID,
+		Method: "face_swap",
+		Params: *req,
+	}
+
+	reqData, err := json.Marshal(jsonReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal face-swap request: %w", err)
+	}
+
+	log.Printf("Sending face-swap request to Python: %s", string(reqData))
+
+	if _, err := e.stdin.Write(append(reqData, '\n')); err != nil {
+		return nil, fmt.Errorf("failed to write to Python stdin: %w", err)
+	}
+
+	// Face-swap timeout: 5 minutes (GIFs can take a while)
+	select {
+	case resp := <-respChan:
+		if resp == nil {
+			return nil, fmt.Errorf("received nil face-swap response")
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("Python face-swap error: %s", *resp.Error)
+		}
+		if resp.Result == nil {
+			return nil, fmt.Errorf("received empty face-swap result")
+		}
+		return resp.Result, nil
+
+	case <-ctx.Done():
+		return nil, fmt.Errorf("face-swap request cancelled: %w", ctx.Err())
+
+	case <-time.After(300 * time.Second):
+		return nil, fmt.Errorf("face-swap timeout (5 minutes)")
+	}
+}
+
 func (e *PythonExecutor) handleResponses() {
 	for {
 		select {
@@ -256,9 +313,10 @@ func (e *PythonExecutor) handleResponses() {
 			continue
 		}
 
-		// Check if this is a video response or image response based on response content
+		// Check if this is a video, face-swap, or image response based on response content
 		e.mu.Lock()
 		videoRespChan, isVideo := e.videoResponses[baseResp.ID]
+		faceswapRespChan, isFaceSwap := e.faceswapResponses[baseResp.ID]
 		imageRespChan, isImage := e.responses[baseResp.ID]
 		e.mu.Unlock()
 
@@ -273,6 +331,18 @@ func (e *PythonExecutor) handleResponses() {
 			case videoRespChan <- &resp:
 			default:
 				log.Printf("Video response channel full for request ID: %d", resp.ID)
+			}
+		} else if isFaceSwap {
+			// Parse as face-swap response
+			var resp models.JSONRPCFaceSwapResponse
+			if err := json.Unmarshal([]byte(line), &resp); err != nil {
+				log.Printf("Failed to decode face-swap response: %v", err)
+				continue
+			}
+			select {
+			case faceswapRespChan <- &resp:
+			default:
+				log.Printf("Face-swap response channel full for request ID: %d", resp.ID)
 			}
 		} else if isImage {
 			// Parse as image response

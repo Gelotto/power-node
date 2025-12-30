@@ -60,6 +60,12 @@ type HeartbeatData struct {
 	VideoMaxFPS      *int  // Maximum video FPS
 	VideoMaxWidth    *int  // Maximum video width
 	VideoMaxHeight   *int  // Maximum video height
+	// Face-swap capability fields
+	SupportsFaceSwap  *bool // Whether worker supports face-swap
+	FaceSwapMaxFrames *int  // Maximum GIF frames
+	FaceSwapMaxWidth  *int  // Maximum image width
+	FaceSwapMaxHeight *int  // Maximum image height
+	FaceSwapEnhance   *bool // Whether GFPGAN enhancement is available
 }
 
 // Heartbeat sends a heartbeat to the backend
@@ -116,6 +122,22 @@ func (c *APIClient) Heartbeat(ctx context.Context, workerID, status string, data
 		}
 		if data.VideoMaxHeight != nil {
 			reqBody["video_max_height"] = *data.VideoMaxHeight
+		}
+		// Face-swap capability fields
+		if data.SupportsFaceSwap != nil {
+			reqBody["supports_faceswap"] = *data.SupportsFaceSwap
+		}
+		if data.FaceSwapMaxFrames != nil {
+			reqBody["faceswap_max_frames"] = *data.FaceSwapMaxFrames
+		}
+		if data.FaceSwapMaxWidth != nil {
+			reqBody["faceswap_max_width"] = *data.FaceSwapMaxWidth
+		}
+		if data.FaceSwapMaxHeight != nil {
+			reqBody["faceswap_max_height"] = *data.FaceSwapMaxHeight
+		}
+		if data.FaceSwapEnhance != nil {
+			reqBody["faceswap_enhance"] = *data.FaceSwapEnhance
 		}
 	}
 
@@ -185,6 +207,21 @@ func (c *APIClient) CompleteJob(ctx context.Context, workerID, jobID, data strin
 		"worker_id":     workerID,
 		"job_id":        jobID,
 		dataField:       data,
+		"generation_ms": generationMs,
+	}
+
+	return c.post(ctx, "/api/v1/workers/complete", reqBody, nil)
+}
+
+// CompleteFaceSwapJob marks a face-swap job as completed with the result
+// data: base64-encoded image (JPEG) or GIF data
+// format: "jpeg" or "gif"
+func (c *APIClient) CompleteFaceSwapJob(ctx context.Context, workerID, jobID, data, format string, generationMs int) error {
+	reqBody := map[string]interface{}{
+		"worker_id":     workerID,
+		"job_id":        jobID,
+		"image_data":    data, // Backend expects image_data for face-swap results
+		"format":        format,
 		"generation_ms": generationMs,
 	}
 

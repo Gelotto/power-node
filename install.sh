@@ -658,6 +658,69 @@ class InferenceService:
             "Please use PyTorch mode with video support enabled."
         )
 
+    def face_swap(self, source_image_url, target_image_url, is_gif=False, swap_all_faces=True, enhance=True, max_frames=100):
+        """Perform face swap on images or GIFs."""
+        import requests
+
+        # Lazy load face swapper
+        if not hasattr(self, '_face_swapper') or self._face_swapper is None:
+            model_path = os.environ.get("FACESWAP_MODEL_PATH", "")
+            if not model_path:
+                raise ValueError("Face swap not available: FACESWAP_MODEL_PATH not set")
+
+            sys.stderr.write(f"Loading face swap models from {model_path}...\n")
+            sys.stderr.flush()
+
+            # Add scripts directory to path for faceswap module
+            scripts_dir = os.path.dirname(os.path.abspath(__file__))
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+
+            from faceswap import FaceSwapper, load_image_from_bytes, image_to_bytes, GifProcessor
+            self._face_swapper = FaceSwapper(model_dir=model_path, enable_enhancement=enhance)
+            self._faceswap_funcs = {
+                'load_image_from_bytes': load_image_from_bytes,
+                'image_to_bytes': image_to_bytes,
+                'GifProcessor': GifProcessor,
+            }
+            sys.stderr.write("Face swap models loaded.\n")
+            sys.stderr.flush()
+
+        sys.stderr.write(f"Face swap: is_gif={is_gif}, swap_all={swap_all_faces}, enhance={enhance}\n")
+        sys.stderr.flush()
+
+        # Download source image
+        source_resp = requests.get(source_image_url, timeout=30)
+        source_resp.raise_for_status()
+        source_img = self._faceswap_funcs['load_image_from_bytes'](source_resp.content)
+
+        # Download target
+        target_resp = requests.get(target_image_url, timeout=30)
+        target_resp.raise_for_status()
+
+        if is_gif:
+            # Process GIF frame by frame
+            processor = self._faceswap_funcs['GifProcessor'](
+                self._face_swapper,
+                enhancer=self._face_swapper.enhancer if enhance else None
+            )
+            result_bytes = processor.process_gif(source_img, target_resp.content, max_frames=max_frames, enhance=enhance)
+            return {
+                "image_data": base64.b64encode(result_bytes).decode(),
+                "format": "gif",
+                "frames_swapped": min(max_frames, 100)  # Approximate
+            }
+        else:
+            # Process single image
+            target_img = self._faceswap_funcs['load_image_from_bytes'](target_resp.content)
+            result_img = self._face_swapper.swap(source_img, target_img, swap_all=swap_all_faces, enhance=enhance)
+            result_bytes = self._faceswap_funcs['image_to_bytes'](result_img, ".jpg", quality=95)
+            return {
+                "image_data": base64.b64encode(result_bytes).decode(),
+                "format": "jpeg",
+                "frames_swapped": 1
+            }
+
     def handle_request(self, req):
         try:
             method = req.get("method")
@@ -665,6 +728,8 @@ class InferenceService:
                 return {"id": req.get("id", 0), "result": self.generate(**req.get("params", {})), "error": None}
             elif method == "generate_video":
                 return {"id": req.get("id", 0), "result": self.generate_video(**req.get("params", {})), "error": None}
+            elif method == "face_swap":
+                return {"id": req.get("id", 0), "result": self.face_swap(**req.get("params", {})), "error": None}
             return {"id": req.get("id", 0), "result": None, "error": f"Unknown method: {method}"}
         except Exception as e:
             return {"id": req.get("id", 0), "result": None, "error": str(e)}
@@ -965,6 +1030,69 @@ class InferenceService:
             "duration_seconds": duration_seconds
         }
 
+    def face_swap(self, source_image_url, target_image_url, is_gif=False, swap_all_faces=True, enhance=True, max_frames=100):
+        """Perform face swap on images or GIFs."""
+        import requests
+
+        # Lazy load face swapper
+        if not hasattr(self, '_face_swapper') or self._face_swapper is None:
+            model_path = os.environ.get("FACESWAP_MODEL_PATH", "")
+            if not model_path:
+                raise ValueError("Face swap not available: FACESWAP_MODEL_PATH not set")
+
+            sys.stderr.write(f"Loading face swap models from {model_path}...\n")
+            sys.stderr.flush()
+
+            # Add scripts directory to path for faceswap module
+            scripts_dir = os.path.dirname(os.path.abspath(__file__))
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+
+            from faceswap import FaceSwapper, load_image_from_bytes, image_to_bytes, GifProcessor
+            self._face_swapper = FaceSwapper(model_dir=model_path, enable_enhancement=enhance)
+            self._faceswap_funcs = {
+                'load_image_from_bytes': load_image_from_bytes,
+                'image_to_bytes': image_to_bytes,
+                'GifProcessor': GifProcessor,
+            }
+            sys.stderr.write("Face swap models loaded.\n")
+            sys.stderr.flush()
+
+        sys.stderr.write(f"Face swap: is_gif={is_gif}, swap_all={swap_all_faces}, enhance={enhance}\n")
+        sys.stderr.flush()
+
+        # Download source image
+        source_resp = requests.get(source_image_url, timeout=30)
+        source_resp.raise_for_status()
+        source_img = self._faceswap_funcs['load_image_from_bytes'](source_resp.content)
+
+        # Download target
+        target_resp = requests.get(target_image_url, timeout=30)
+        target_resp.raise_for_status()
+
+        if is_gif:
+            # Process GIF frame by frame
+            processor = self._faceswap_funcs['GifProcessor'](
+                self._face_swapper,
+                enhancer=self._face_swapper.enhancer if enhance else None
+            )
+            result_bytes = processor.process_gif(source_img, target_resp.content, max_frames=max_frames, enhance=enhance)
+            return {
+                "image_data": base64.b64encode(result_bytes).decode(),
+                "format": "gif",
+                "frames_swapped": min(max_frames, 100)  # Approximate
+            }
+        else:
+            # Process single image
+            target_img = self._faceswap_funcs['load_image_from_bytes'](target_resp.content)
+            result_img = self._face_swapper.swap(source_img, target_img, swap_all=swap_all_faces, enhance=enhance)
+            result_bytes = self._faceswap_funcs['image_to_bytes'](result_img, ".jpg", quality=95)
+            return {
+                "image_data": base64.b64encode(result_bytes).decode(),
+                "format": "jpeg",
+                "frames_swapped": 1
+            }
+
     def handle_request(self, req):
         try:
             method = req.get("method")
@@ -972,6 +1100,8 @@ class InferenceService:
                 return {"id": req.get("id", 0), "result": self.generate(**req.get("params", {})), "error": None}
             elif method == "generate_video":
                 return {"id": req.get("id", 0), "result": self.generate_video(**req.get("params", {})), "error": None}
+            elif method == "face_swap":
+                return {"id": req.get("id", 0), "result": self.face_swap(**req.get("params", {})), "error": None}
             return {"id": req.get("id", 0), "result": None, "error": f"Unknown method: {method}"}
         except Exception as e:
             return {"id": req.get("id", 0), "result": None, "error": str(e)}
@@ -1007,6 +1137,32 @@ INFERENCE_EOF
 fi
 
 chmod +x "$INSTALL_DIR/scripts/inference.py"
+
+# Copy faceswap module and download script for face-swap support
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+if [ -d "$SCRIPT_DIR/scripts/faceswap" ]; then
+    cp -r "$SCRIPT_DIR/scripts/faceswap" "$INSTALL_DIR/scripts/"
+    echo -e "  ${GREEN}✓${NC} Installed faceswap module"
+fi
+
+if [ -f "$SCRIPT_DIR/scripts/download_faceswap_models.py" ]; then
+    cp "$SCRIPT_DIR/scripts/download_faceswap_models.py" "$INSTALL_DIR/scripts/"
+    echo -e "  ${GREEN}✓${NC} Installed faceswap model download script"
+fi
+
+# =============================================================================
+# Download Face-Swap Models (Optional)
+# =============================================================================
+if [ "$SKIP_FACESWAP_MODELS" != "true" ] && [ -f "$INSTALL_DIR/scripts/download_faceswap_models.py" ]; then
+    echo -e "\n${YELLOW}[7.5/8] Downloading face-swap models (~860MB)...${NC}"
+    echo -e "  ${YELLOW}Note: This may take several minutes${NC}"
+    if "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/scripts/download_faceswap_models.py" "$INSTALL_DIR/models/faceswap" 2>&1; then
+        echo -e "  ${GREEN}✓${NC} Face-swap models downloaded"
+    else
+        echo -e "  ${YELLOW}!${NC} Face-swap model download failed (non-critical)"
+        echo -e "  ${YELLOW}!${NC} Run manually: python3 $INSTALL_DIR/scripts/download_faceswap_models.py $INSTALL_DIR/models/faceswap"
+    fi
+fi
 
 # =============================================================================
 # Create Configuration

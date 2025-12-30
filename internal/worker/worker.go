@@ -38,6 +38,8 @@ type Worker struct {
 	processingJobMu sync.RWMutex
 	// Video capability
 	supportsVideo bool
+	// Face-swap capability
+	supportsFaceSwap bool
 }
 
 // NewWorker creates a new worker
@@ -83,6 +85,9 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	// Detect video capability
 	w.detectVideoCapability()
+
+	// Detect face-swap capability
+	w.detectFaceSwapCapability()
 
 	// Validate configuration before starting
 	if err := w.config.Validate(); err != nil {
@@ -313,14 +318,25 @@ func (w *Worker) restartPython() error {
 	return nil
 }
 
-// processJob processes a single job (routes to image or video processing)
+// processJob processes a single job (routes to image, video, or face-swap processing)
 func (w *Worker) processJob(ctx context.Context, job *models.Job) {
 	// Track that we're processing a job (for pause coordination)
 	w.setProcessingJob(true)
 	defer w.setProcessingJob(false)
 
 	// Route based on job type
-	if job.IsVideoJob() {
+	switch {
+	case job.IsFaceSwapJob():
+		// Validate face-swap capability before processing
+		if !w.canProcessFaceSwap() {
+			log.Printf("Cannot process face-swap job %s: worker does not support face-swap", job.ID)
+			if err := w.apiClient.FailJob(ctx, w.id, job.ID, "Worker does not support face-swap"); err != nil {
+				log.Printf("Failed to report job failure: %v", err)
+			}
+			return
+		}
+		w.processFaceSwapJob(ctx, job)
+	case job.IsVideoJob():
 		// Validate video capability before processing
 		if !w.canProcessVideo() {
 			log.Printf("Cannot process video job %s: worker does not support video generation", job.ID)
@@ -330,7 +346,7 @@ func (w *Worker) processJob(ctx context.Context, job *models.Job) {
 			return
 		}
 		w.processVideoJob(ctx, job)
-	} else {
+	default:
 		w.processImageJob(ctx, job)
 	}
 }
@@ -472,6 +488,73 @@ func (w *Worker) processVideoJob(ctx context.Context, job *models.Job) {
 	log.Printf("Video job %s completed successfully!", job.ID)
 }
 
+// processFaceSwapJob processes a face-swap job
+func (w *Worker) processFaceSwapJob(ctx context.Context, job *models.Job) {
+	log.Printf("Processing face-swap job %s...", job.ID)
+	startTime := time.Now()
+
+	if err := w.apiClient.StartProcessing(ctx, w.id, job.ID); err != nil {
+		log.Printf("Failed to notify processing start for job %s: %v", job.ID, err)
+	}
+
+	// Validate required fields
+	if job.SourceImageURL == nil || job.TargetImageURL == nil {
+		log.Printf("Face-swap job %s missing source or target URL", job.ID)
+		if err := w.apiClient.FailJob(ctx, w.id, job.ID, "Missing source or target image URL"); err != nil {
+			log.Printf("Failed to report job failure: %v", err)
+		}
+		return
+	}
+
+	// Build face-swap request from job
+	isGIF := false
+	if job.IsGIF != nil {
+		isGIF = *job.IsGIF
+	}
+	swapAll := true
+	if job.SwapAllFaces != nil {
+		swapAll = *job.SwapAllFaces
+	}
+	enhance := true
+	if job.EnhanceResult != nil {
+		enhance = *job.EnhanceResult
+	}
+	maxFrames := w.config.FaceSwap.MaxFrames
+	if job.GifFrameCount != nil && *job.GifFrameCount > 0 {
+		maxFrames = *job.GifFrameCount
+	}
+
+	req := &models.FaceSwapRequest{
+		SourceImageURL: *job.SourceImageURL,
+		TargetImageURL: *job.TargetImageURL,
+		IsGIF:          isGIF,
+		SwapAllFaces:   swapAll,
+		Enhance:        enhance,
+		MaxFrames:      maxFrames,
+	}
+
+	result, err := w.pythonExec.GenerateFaceSwap(ctx, req)
+	if err != nil {
+		log.Printf("Face-swap failed for job %s: %v", job.ID, err)
+		if err := w.apiClient.FailJob(ctx, w.id, job.ID, err.Error()); err != nil {
+			log.Printf("Failed to report job failure: %v", err)
+		}
+		return
+	}
+
+	elapsed := time.Since(startTime)
+	generationMs := int(elapsed.Milliseconds())
+	log.Printf("Face-swap completed in %.2f seconds", elapsed.Seconds())
+
+	log.Printf("Uploading face-swap result for job %s...", job.ID)
+	if err := w.apiClient.CompleteFaceSwapJob(ctx, w.id, job.ID, result.ImageData, result.Format, generationMs); err != nil {
+		log.Printf("Failed to complete job %s: %v", job.ID, err)
+		return
+	}
+
+	log.Printf("Face-swap job %s completed successfully!", job.ID)
+}
+
 // heartbeatLoop sends periodic heartbeats to the backend
 func (w *Worker) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(w.config.Worker.HeartbeatInterval)
@@ -533,6 +616,15 @@ func (w *Worker) buildHeartbeatData() *client.HeartbeatData {
 		data.VideoMaxFPS = &w.config.Video.MaxFPS
 		data.VideoMaxWidth = &w.config.Video.MaxWidth
 		data.VideoMaxHeight = &w.config.Video.MaxHeight
+	}
+
+	// Add face-swap capability information
+	data.SupportsFaceSwap = &w.supportsFaceSwap
+	if w.supportsFaceSwap {
+		data.FaceSwapMaxFrames = &w.config.FaceSwap.MaxFrames
+		data.FaceSwapMaxWidth = &w.config.FaceSwap.MaxWidth
+		data.FaceSwapMaxHeight = &w.config.FaceSwap.MaxHeight
+		data.FaceSwapEnhance = w.config.FaceSwap.Enhancement
 	}
 
 	return data
@@ -645,4 +737,73 @@ func (w *Worker) detectVideoCapability() {
 // canProcessVideo checks if this worker can process video jobs
 func (w *Worker) canProcessVideo() bool {
 	return w.supportsVideo
+}
+
+// detectFaceSwapCapability checks if this worker can perform face-swaps
+func (w *Worker) detectFaceSwapCapability() {
+	// Check if explicitly enabled/disabled in config
+	if w.config.FaceSwap.Enabled != nil {
+		w.supportsFaceSwap = *w.config.FaceSwap.Enabled
+		if w.supportsFaceSwap {
+			log.Printf("Face-swap support: ENABLED (explicit config)")
+		} else {
+			log.Printf("Face-swap support: DISABLED (explicit config)")
+		}
+		return
+	}
+
+	// Auto-detect based on:
+	// 1. Face-swap model path exists
+	// 2. inswapper_128.onnx model exists
+	// 3. Sufficient VRAM (6GB+)
+
+	// Check 1: Model path must be set
+	modelPath := w.config.FaceSwap.ModelPath
+	if modelPath == "" {
+		w.supportsFaceSwap = false
+		log.Printf("Face-swap support: DISABLED (FACESWAP_MODEL_PATH not set)")
+		return
+	}
+
+	// Check 2: Verify the model directory exists
+	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+		w.supportsFaceSwap = false
+		log.Printf("Face-swap support: DISABLED (model directory not found at %s)", modelPath)
+		return
+	}
+
+	// Check 3: Verify inswapper_128.onnx exists (required for face-swap)
+	inswapperPath := filepath.Join(modelPath, "inswapper_128.onnx")
+	if _, err := os.Stat(inswapperPath); os.IsNotExist(err) {
+		w.supportsFaceSwap = false
+		log.Printf("Face-swap support: DISABLED (inswapper_128.onnx not found at %s)", modelPath)
+		log.Printf("  Tip: Download from https://huggingface.co/ezioruan/inswapper_128.onnx")
+		return
+	}
+
+	// Check 4: Sufficient VRAM (6GB minimum for face-swap)
+	if w.capabilities != nil && w.capabilities.VRAM < 6 {
+		w.supportsFaceSwap = false
+		log.Printf("Face-swap support: DISABLED (insufficient VRAM: %dGB < 6GB)", w.capabilities.VRAM)
+		return
+	}
+
+	// All checks passed
+	w.supportsFaceSwap = true
+	log.Printf("Face-swap support: ENABLED (models found at %s)", modelPath)
+
+	// Log enhancement capability
+	if w.config.FaceSwap.Enhancement != nil && *w.config.FaceSwap.Enhancement {
+		gfpganPath := filepath.Join(modelPath, "GFPGANv1.4.pth")
+		if _, err := os.Stat(gfpganPath); os.IsNotExist(err) {
+			log.Printf("  Note: GFPGAN not found - enhancement will be disabled")
+		} else {
+			log.Printf("  Enhancement: ENABLED (GFPGAN found)")
+		}
+	}
+}
+
+// canProcessFaceSwap checks if this worker can process face-swap jobs
+func (w *Worker) canProcessFaceSwap() bool {
+	return w.supportsFaceSwap
 }

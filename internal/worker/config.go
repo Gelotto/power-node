@@ -11,11 +11,12 @@ import (
 
 // Config holds worker configuration
 type Config struct {
-	API    APIConfig    `yaml:"api"`
-	Model  ModelConfig  `yaml:"model"`
-	Video  VideoConfig  `yaml:"video"`
-	Worker WorkerConfig `yaml:"worker"`
-	Python PythonConfig `yaml:"python"`
+	API      APIConfig      `yaml:"api"`
+	Model    ModelConfig    `yaml:"model"`
+	Video    VideoConfig    `yaml:"video"`
+	FaceSwap FaceSwapConfig `yaml:"faceswap"`
+	Worker   WorkerConfig   `yaml:"worker"`
+	Python   PythonConfig   `yaml:"python"`
 }
 
 // APIConfig holds API connection settings
@@ -40,6 +41,16 @@ type VideoConfig struct {
 	MaxFPS      int    `yaml:"max_fps"`      // Maximum video FPS (default: 24)
 	MaxWidth    int    `yaml:"max_width"`    // Maximum video width (default: 480)
 	MaxHeight   int    `yaml:"max_height"`   // Maximum video height (default: 480)
+}
+
+// FaceSwapConfig holds face-swap settings
+type FaceSwapConfig struct {
+	Enabled     *bool  `yaml:"enabled"`     // nil = auto-detect, true/false = explicit
+	ModelPath   string `yaml:"model_path"`  // Path to face-swap models (if empty, check FACESWAP_MODEL_PATH env)
+	MaxFrames   int    `yaml:"max_frames"`  // Maximum GIF frames (default: 100)
+	MaxWidth    int    `yaml:"max_width"`   // Maximum image width (default: 2048)
+	MaxHeight   int    `yaml:"max_height"`  // Maximum image height (default: 2048)
+	Enhancement *bool  `yaml:"enhancement"` // Enable GFPGAN enhancement (default: true)
 }
 
 // WorkerConfig holds worker-specific settings
@@ -117,6 +128,25 @@ func LoadConfig(path string) (*Config, error) {
 	// Check WAN_MODEL_PATH env if not set in config
 	if cfg.Video.ModelPath == "" {
 		cfg.Video.ModelPath = os.Getenv("WAN_MODEL_PATH")
+	}
+
+	// Face-swap config defaults
+	if cfg.FaceSwap.MaxFrames == 0 {
+		cfg.FaceSwap.MaxFrames = 100
+	}
+	if cfg.FaceSwap.MaxWidth == 0 {
+		cfg.FaceSwap.MaxWidth = 2048
+	}
+	if cfg.FaceSwap.MaxHeight == 0 {
+		cfg.FaceSwap.MaxHeight = 2048
+	}
+	if cfg.FaceSwap.Enhancement == nil {
+		defaultTrue := true
+		cfg.FaceSwap.Enhancement = &defaultTrue
+	}
+	// Check FACESWAP_MODEL_PATH env if not set in config
+	if cfg.FaceSwap.ModelPath == "" {
+		cfg.FaceSwap.ModelPath = os.Getenv("FACESWAP_MODEL_PATH")
 	}
 
 	// Idle detection defaults (feature is opt-in, so enabled defaults to false)
