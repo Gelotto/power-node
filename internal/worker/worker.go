@@ -25,7 +25,7 @@ type Worker struct {
 	config       *Config
 	configPath   string
 	apiClient    *client.APIClient
-	pythonExec   *executor.PythonExecutor
+	pythonExec   Executor // Interface for testability
 	stopChan     chan struct{}
 	// GPU idle detection
 	gpuMonitor *GPUMonitor
