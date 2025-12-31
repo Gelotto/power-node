@@ -633,31 +633,46 @@ fi
 echo -e "${GREEN}  ✓ Models ready${NC}"
 
 # =============================================================================
-# Create Inference Script
+# Create Shared Utilities Module
 # =============================================================================
-if [ "$SERVICE_MODE" = "gguf" ]; then
-cat > "$INSTALL_DIR/scripts/inference.py" << 'INFERENCE_EOF'
+echo -e "${BLUE}[8/13] Creating shared utilities...${NC}"
+
+cat > "$INSTALL_DIR/scripts/shared_utils.py" << 'SHARED_UTILS_EOF'
 #!/usr/bin/env python3
 """
-Power Node Inference Service (GGUF/stable-diffusion.cpp)
+Shared utilities for Power Node inference scripts.
+Contains security constants and common functions used by both GGUF and PyTorch modes.
 """
 
-import sys
-import json
-import base64
-import io
-import os
-import argparse
-import random
-import time
-import threading
 from urllib.parse import urlparse
+import subprocess
 
 # Security constants - allowed hosts for face-swap image downloads
-# storage.picshapes.com: S3 storage where user uploads go
-# api.gelotto.io: Primary worker API domain
-# api.picshapes.com: Legacy API domain (for backwards compatibility)
-ALLOWED_HOSTS = ['storage.picshapes.com', 'api.gelotto.io', 'api.picshapes.com']
+ALLOWED_HOSTS = [
+    # Picshapes infrastructure
+    'storage.picshapes.com',
+    'api.gelotto.io',
+    'api.picshapes.com',
+    # Meme templates
+    'i.imgflip.com',
+    'imgflip.com',
+    # Image hosting
+    'i.imgur.com',
+    'imgur.com',
+    # Reddit
+    'i.redd.it',
+    'preview.redd.it',
+    # GIFs
+    'media.giphy.com',
+    'giphy.com',
+    'media.tenor.com',
+    'tenor.com',
+    # Social media CDNs
+    'pbs.twimg.com',
+    'cdn.discordapp.com',
+    # Stock photos
+    'images.unsplash.com',
+]
 MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024  # 20MB
 FACESWAP_IDLE_TIMEOUT = 300  # 5 minutes
 
@@ -697,8 +712,8 @@ def download_with_limit(url, max_bytes=MAX_DOWNLOAD_SIZE, timeout=30):
 
 
 def detect_vram_gb():
+    """Detect GPU VRAM in GB."""
     try:
-        import subprocess
         result = subprocess.run(
             ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
             capture_output=True, text=True
@@ -708,6 +723,35 @@ def detect_vram_gb():
     except:
         pass
     return 8
+SHARED_UTILS_EOF
+
+echo -e "${GREEN}  ✓ Shared utilities created${NC}"
+
+# =============================================================================
+# Create Inference Script
+# =============================================================================
+if [ "$SERVICE_MODE" = "gguf" ]; then
+cat > "$INSTALL_DIR/scripts/inference.py" << 'INFERENCE_EOF'
+#!/usr/bin/env python3
+"""
+Power Node Inference Service (GGUF/stable-diffusion.cpp)
+"""
+
+import sys
+import json
+import base64
+import io
+import os
+import argparse
+import random
+import time
+import threading
+
+# Import shared utilities (security constants and common functions)
+from shared_utils import (
+    ALLOWED_HOSTS, MAX_DOWNLOAD_SIZE, FACESWAP_IDLE_TIMEOUT,
+    validate_image_url, download_with_limit, detect_vram_gb
+)
 
 
 class InferenceService:
@@ -953,49 +997,12 @@ import random
 import gc
 import time
 import threading
-from urllib.parse import urlparse
 
-# Security constants - allowed hosts for face-swap image downloads
-# storage.picshapes.com: S3 storage where user uploads go
-# api.gelotto.io: Primary worker API domain
-# api.picshapes.com: Legacy API domain (for backwards compatibility)
-ALLOWED_HOSTS = ['storage.picshapes.com', 'api.gelotto.io', 'api.picshapes.com']
-MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024  # 20MB
-FACESWAP_IDLE_TIMEOUT = 300  # 5 minutes
-
-
-def validate_image_url(url):
-    """Validate URL is from allowed hosts (SSRF protection)."""
-    parsed = urlparse(url)
-    if parsed.scheme != 'https':
-        raise ValueError(f"Only HTTPS URLs allowed, got: {parsed.scheme}")
-    if parsed.hostname not in ALLOWED_HOSTS:
-        raise ValueError(f"URL host not allowed: {parsed.hostname}")
-    return url
-
-
-def download_with_limit(url, max_bytes=MAX_DOWNLOAD_SIZE, timeout=30):
-    """Download URL content with size limit to prevent DoS."""
-    import requests
-
-    resp = requests.get(url, stream=True, timeout=timeout)
-    resp.raise_for_status()
-
-    # Check Content-Length header if available
-    content_length = resp.headers.get('content-length')
-    if content_length and int(content_length) > max_bytes:
-        raise ValueError(f"File too large: {content_length} bytes (max: {max_bytes})")
-
-    # Stream download with size check
-    chunks = []
-    downloaded = 0
-    for chunk in resp.iter_content(chunk_size=8192):
-        downloaded += len(chunk)
-        if downloaded > max_bytes:
-            raise ValueError(f"Download exceeded size limit: {downloaded} bytes (max: {max_bytes})")
-        chunks.append(chunk)
-
-    return b''.join(chunks)
+# Import shared utilities (security constants and common functions)
+from shared_utils import (
+    ALLOWED_HOSTS, MAX_DOWNLOAD_SIZE, FACESWAP_IDLE_TIMEOUT,
+    validate_image_url, download_with_limit, detect_vram_gb
+)
 
 
 class InferenceService:
