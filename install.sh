@@ -1410,7 +1410,7 @@ if [ -d "$SCRIPT_DIR/scripts/faceswap" ]; then
 else
     # Download from GitHub (when running via curl | bash)
     echo "  Downloading faceswap module from GitHub..."
-    FACESWAP_FILES="__init__.py face_swap.py face_enhancer.py gif_processor.py torchvision_compat.py"
+    FACESWAP_FILES="__init__.py constants.py face_swap.py face_enhancer.py gif_processor.py torchvision_compat.py"
     DOWNLOAD_OK=true
     for file in $FACESWAP_FILES; do
         if ! curl -sSL "$GITHUB_RAW/scripts/faceswap/$file" -o "$INSTALL_DIR/scripts/faceswap/$file" 2>/dev/null; then
