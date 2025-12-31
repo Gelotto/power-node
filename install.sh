@@ -6,15 +6,20 @@
 set -e
 
 # Parse command line arguments
-INSTALL_VIDEO=false
+SKIP_VIDEO=false
+SKIP_FACESWAP=false
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        --with-video) INSTALL_VIDEO=true ;;
+        --no-video) SKIP_VIDEO=true ;;
+        --no-faceswap) SKIP_FACESWAP=true ;;
+        --minimal) SKIP_VIDEO=true; SKIP_FACESWAP=true ;;
         --help|-h)
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --with-video    Install video generation support (Wan2.1 model)"
+            echo "  --no-video      Skip video model (auto-downloaded for 12GB+ VRAM PyTorch GPUs)"
+            echo "  --no-faceswap   Skip face-swap model (auto-downloaded for 6GB+ VRAM)"
+            echo "  --minimal       Skip all optional models (video + face-swap)"
             echo "  --help, -h      Show this help message"
             exit 0
             ;;
@@ -447,6 +452,31 @@ download_file() {
     fi
 }
 
+# Check disk space and warn if below threshold
+# Returns 0 if OK to proceed, 1 if should skip
+check_disk_space_warning() {
+    local required_gb=$1
+    local label=$2
+    local available_kb=$(df -k "$INSTALL_DIR" | tail -1 | awk '{print $4}')
+    local available_gb=$((available_kb / 1024 / 1024))
+
+    if [ "$available_gb" -lt "$required_gb" ]; then
+        echo -e "${YELLOW}  Warning: Only ${available_gb}GB free disk space${NC}"
+        echo -e "  ${label} recommends ${required_gb}GB free"
+        # Try to prompt user in interactive mode
+        if read -p "  Continue anyway? (y/N) " -r < /dev/tty 2>/dev/null; then
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                return 0  # User wants to proceed
+            fi
+            return 1  # User declined
+        fi
+        # Non-interactive mode - skip by default
+        echo "  [Non-interactive mode - skipping due to low disk space]"
+        return 1
+    fi
+    return 0  # Enough disk space
+}
+
 if [ "$SERVICE_MODE" = "gguf" ]; then
     if [ $VRAM_GB -lt 10 ]; then
         QUANT="Q4_0"
@@ -507,43 +537,35 @@ snapshot_download(
         "$INSTALL_DIR/models/vae/ae.safetensors" \
         "VAE"
 
-    # Download Wan2.1 video model (optional - for video generation)
-    echo ""
-    echo -e "${CYAN}Video Generation Support (optional):${NC}"
-    echo "  The Wan2.1-Diffusers model enables AI video generation (~29GB download)."
-    echo "  This requires significant disk space and download time."
-    echo ""
-
+    # =============================================================================
+    # Video Generation Support (Auto-detected based on GPU capability)
+    # =============================================================================
     WAN_MODEL_DIR="$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers"
-    DOWNLOAD_WAN=false
 
-    # Check if --with-video flag was passed
-    if [ "$INSTALL_VIDEO" = true ]; then
-        echo -e "  ${GREEN}--with-video flag detected, installing video support${NC}"
-        DOWNLOAD_WAN=true
-    # Check if we can read from terminal
-    elif read -p "  Download Wan2.1 video model? (y/N) " -r < /dev/tty 2>/dev/null; then
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            DOWNLOAD_WAN=true
-        fi
-    else
-        # Non-interactive mode - show manual instructions
-        echo "  [Non-interactive mode - skipping video model]"
-        echo "  To install video support, re-run with: --with-video flag"
-        echo "    curl -sSL https://raw.githubusercontent.com/Gelotto/power-node/main/install.sh | bash -s -- --with-video"
+    # Check if system is video-capable: PyTorch mode (already true here) + 12GB+ VRAM
+    VIDEO_CAPABLE=false
+    if [ "$VRAM_GB" -ge 12 ]; then
+        VIDEO_CAPABLE=true
     fi
 
-    if [ "$DOWNLOAD_WAN" = true ]; then
+    if [ "$VIDEO_CAPABLE" = true ] && [ "$SKIP_VIDEO" != true ]; then
+        echo ""
+        echo -e "${CYAN}Video Generation Support:${NC}"
+        echo "  Your GPU supports video generation (${VRAM_GB}GB VRAM, PyTorch mode)"
+
+        # Check if already cached
         if [ -d "$WAN_MODEL_DIR" ] && [ -f "$WAN_MODEL_DIR/model_index.json" ]; then
             echo -e "  ${GREEN}✓${NC} Wan2.1-T2V-1.3B-Diffusers (cached)"
         else
-            echo "  Downloading Wan2.1-T2V-1.3B-Diffusers video model (~29GB)..."
-            echo "  This may take a while depending on your internet connection."
-            source "$INSTALL_DIR/venv/bin/activate"
-            if ! pip install huggingface_hub --quiet 2>/dev/null; then
-                echo -e "${YELLOW}  Warning: Failed to install huggingface_hub${NC}"
-            fi
-            python3 -c "
+            # Check disk space (recommend 50GB free for video model)
+            if check_disk_space_warning 50 "Video model (~29GB)"; then
+                echo "  Auto-downloading Wan2.1 video model (~29GB)..."
+                echo "  This may take a while depending on your internet connection."
+                source "$INSTALL_DIR/venv/bin/activate"
+                if ! pip install huggingface_hub --quiet 2>/dev/null; then
+                    echo -e "${YELLOW}  Warning: Failed to install huggingface_hub${NC}"
+                fi
+                python3 -c "
 from huggingface_hub import snapshot_download
 snapshot_download(
     'Wan-AI/Wan2.1-T2V-1.3B-Diffusers',
@@ -551,25 +573,31 @@ snapshot_download(
     local_dir_use_symlinks=False
 )
 "
-            DOWNLOAD_EXIT_CODE=$?
+                DOWNLOAD_EXIT_CODE=$?
 
-            # Validate the download was successful
-            if [ $DOWNLOAD_EXIT_CODE -eq 0 ] && [ -f "$WAN_MODEL_DIR/model_index.json" ]; then
-                echo -e "  ${GREEN}✓${NC} Wan2.1-Diffusers video model installed successfully"
-            else
-                echo -e "${RED}  ✗ Wan2.1 model download incomplete or failed${NC}"
-                if [ ! -f "$WAN_MODEL_DIR/model_index.json" ]; then
-                    echo -e "${YELLOW}    Missing: model_index.json${NC}"
+                # Validate the download was successful
+                if [ $DOWNLOAD_EXIT_CODE -eq 0 ] && [ -f "$WAN_MODEL_DIR/model_index.json" ]; then
+                    echo -e "  ${GREEN}✓${NC} Wan2.1-Diffusers video model installed successfully"
+                else
+                    echo -e "${RED}  ✗ Wan2.1 model download incomplete or failed${NC}"
+                    if [ ! -f "$WAN_MODEL_DIR/model_index.json" ]; then
+                        echo -e "${YELLOW}    Missing: model_index.json${NC}"
+                    fi
+                    echo "  Video generation will not be available."
+                    echo "  You can try downloading manually:"
+                    echo "    huggingface-cli download Wan-AI/Wan2.1-T2V-1.3B-Diffusers --local-dir $WAN_MODEL_DIR"
                 fi
-                echo "  Video generation will not be available."
-                echo "  You can try downloading manually:"
-                echo "    huggingface-cli download Wan-AI/Wan2.1-T2V-1.3B-Diffusers --local-dir $WAN_MODEL_DIR"
+                deactivate
+            else
+                echo "  Skipping video model (disk space check)"
             fi
-            deactivate
         fi
-    else
+    elif [ "$SKIP_VIDEO" = true ]; then
         echo ""
-        echo "  Skipping video model. You can install it later if needed."
+        echo -e "  Video: ${YELLOW}Skipped${NC} (--no-video flag)"
+    elif [ "$VRAM_GB" -lt 12 ]; then
+        echo ""
+        echo -e "  Video: ${YELLOW}Not available${NC} (${VRAM_GB}GB VRAM < 12GB required)"
     fi
 fi
 
@@ -1374,9 +1402,15 @@ else
 fi
 
 # =============================================================================
-# Download Face-Swap Models (Optional)
+# Download Face-Swap Models (Auto-detected based on GPU capability)
 # =============================================================================
-if [ "$SKIP_FACESWAP_MODELS" != "true" ] && [ -f "$INSTALL_DIR/scripts/download_faceswap_models.py" ]; then
+# Check if system is face-swap capable: 6GB+ VRAM
+FACESWAP_CAPABLE=false
+if [ "$VRAM_GB" -ge 6 ]; then
+    FACESWAP_CAPABLE=true
+fi
+
+if [ "$FACESWAP_CAPABLE" = true ] && [ "$SKIP_FACESWAP" != true ] && [ -f "$INSTALL_DIR/scripts/download_faceswap_models.py" ]; then
     echo -e "\n${YELLOW}[7.5/8] Downloading face-swap models (~860MB)...${NC}"
     echo -e "  ${YELLOW}Note: This may take several minutes${NC}"
     if "$INSTALL_DIR/venv/bin/python3" "$INSTALL_DIR/scripts/download_faceswap_models.py" "$INSTALL_DIR/models/faceswap" 2>&1; then
@@ -1385,6 +1419,10 @@ if [ "$SKIP_FACESWAP_MODELS" != "true" ] && [ -f "$INSTALL_DIR/scripts/download_
         echo -e "  ${YELLOW}!${NC} Face-swap model download failed (non-critical)"
         echo -e "  ${YELLOW}!${NC} Run manually: python3 $INSTALL_DIR/scripts/download_faceswap_models.py $INSTALL_DIR/models/faceswap"
     fi
+elif [ "$SKIP_FACESWAP" = true ]; then
+    echo -e "\n  Face-swap: ${YELLOW}Skipped${NC} (--no-faceswap flag)"
+elif [ "$VRAM_GB" -lt 6 ]; then
+    echo -e "\n  Face-swap: ${YELLOW}Not available${NC} (${VRAM_GB}GB VRAM < 6GB required)"
 fi
 
 # =============================================================================
@@ -1644,6 +1682,17 @@ if [ -f "$INSTALL_DIR/models/faceswap/inswapper_128.onnx" ]; then
     FACESWAP_STATUS="Enabled"
 fi
 echo -e "  ${BLUE}Face-Swap:${NC}     $FACESWAP_STATUS"
+
+# Check video availability
+VIDEO_STATUS="Not available"
+if [ -f "$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers/model_index.json" ]; then
+    VIDEO_STATUS="Enabled"
+elif [ "$SERVICE_MODE" = "gguf" ]; then
+    VIDEO_STATUS="Not available (GGUF mode)"
+elif [ "$VRAM_GB" -lt 12 ]; then
+    VIDEO_STATUS="Not available (${VRAM_GB}GB VRAM)"
+fi
+echo -e "  ${BLUE}Video:${NC}         $VIDEO_STATUS"
 echo ""
 
 # Offer to install systemd service

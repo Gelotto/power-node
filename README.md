@@ -10,20 +10,26 @@ Power Node lets you contribute GPU compute power to generate AI images and earn 
 - **Linux** with NVIDIA drivers installed
 - **Python 3.10+**
 - **CUDA toolkit** (for GGUF mode, to build stable-diffusion.cpp)
-- **~15GB disk space** (GGUF mode) or **~40GB disk space** (PyTorch mode)
+- **Disk space:**
+  - GGUF mode: ~15GB (base) + ~500MB (face-swap)
+  - PyTorch mode: ~40GB (base) + ~29GB (video, optional) + ~500MB (face-swap)
 
 ### Supported GPUs
 
-| GPU | VRAM | Mode | Disk Space | Performance |
-|-----|------|------|------------|-------------|
-| RTX 3060 | 12GB | GGUF | ~15GB | Good |
-| RTX 4060 | 8GB | GGUF | ~10GB | Good |
-| RTX 4070/Ti | 12GB | GGUF | ~15GB | Better |
-| RTX 4080 | 16GB | GGUF | ~15GB | Better |
-| RTX 4090 | 24GB | GGUF | ~15GB | Best |
-| RTX 5070 Ti+ | 16GB+ | PyTorch | ~40GB | Best |
+| GPU | VRAM | Mode | Video | Disk Space | Performance |
+|-----|------|------|-------|------------|-------------|
+| RTX 3060 | 12GB | GGUF | No | ~15GB | Good |
+| RTX 4060 | 8GB | GGUF | No | ~10GB | Good |
+| RTX 4070/Ti | 12GB | GGUF | No | ~15GB | Better |
+| RTX 4080 | 16GB | GGUF | No | ~15GB | Better |
+| RTX 4090 | 24GB | GGUF | No | ~15GB | Best |
+| RTX 5070 Ti | 16GB | PyTorch | Yes | ~70GB | Best |
+| RTX 5080 | 16GB | PyTorch | Yes | ~70GB | Best |
+| RTX 5090 | 32GB | PyTorch | Yes | ~70GB | Best |
 
-**Note:** RTX 50-series (Blackwell) GPUs require PyTorch mode due to CUDA compute capability 12.0.
+**Notes:**
+- RTX 50-series (Blackwell) GPUs require PyTorch mode due to CUDA compute capability 12.0
+- Video generation requires PyTorch mode with 12GB+ VRAM (automatically detected)
 
 ## Quick Start
 
@@ -52,10 +58,30 @@ cd power-node
 The installer will:
 1. Detect your GPU and VRAM
 2. Download the appropriate model (~9GB for GGUF, ~31GB for PyTorch)
-3. Set up Python environment and dependencies
-4. Create configuration files
+3. **Auto-download optional models** based on GPU capability:
+   - **Video generation** (Wan2.1, ~29GB) - PyTorch mode with 12GB+ VRAM
+   - **Face-swap** (~500MB) - Any mode with 6GB+ VRAM
+4. Set up Python environment and dependencies
+5. Create configuration files
 
-**Installation time:** 10-30 minutes depending on internet speed
+**Installation time:** 10-30 minutes depending on internet speed (longer if video model is downloaded)
+
+#### Installation Options
+
+Skip optional models with these flags:
+
+```bash
+# Skip video model only
+curl -sSL ... | bash -s -- --no-video
+
+# Skip face-swap only
+curl -sSL ... | bash -s -- --no-faceswap
+
+# Skip all optional models (minimal install)
+curl -sSL ... | bash -s -- --minimal
+```
+
+The installer will warn if disk space is below 50GB when downloading the video model.
 
 ### 3. Configure
 
