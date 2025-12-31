@@ -373,6 +373,17 @@ echo -e "${GREEN}  ✓ Python environment ready${NC}"
 # =============================================================================
 echo -e "\n${YELLOW}[6.5/7] Installing face-swap dependencies...${NC}"
 
+# Install Python development headers (required for insightface Cython compilation)
+# This provides Python.h which is needed to build insightface's C extensions
+if command -v dpkg &> /dev/null; then
+    if ! dpkg -s python3-dev >/dev/null 2>&1; then
+        echo "  Installing python3-dev (required for insightface)..."
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get install -y python3-dev >/dev/null 2>&1 || echo "  [Could not auto-install python3-dev]"
+        fi
+    fi
+fi
+
 source "$INSTALL_DIR/venv/bin/activate"
 
 # Core dependencies (required)
@@ -381,6 +392,7 @@ if pip install insightface==0.7.3 opencv-python-headless requests imageio imagei
     echo -e "  ${GREEN}✓${NC} Core packages installed"
 else
     echo -e "  ${YELLOW}!${NC} Core packages failed - face-swap may not work"
+    echo "  Hint: If you see 'Python.h not found', run: sudo apt-get install python3-dev"
 fi
 
 # ONNX runtime (try GPU first, fallback to CPU)
@@ -395,10 +407,27 @@ fi
 
 # GFPGAN for face enhancement (optional, may fail due to complex deps)
 echo "  Installing GFPGAN (face enhancement)..."
-if pip install gfpgan --quiet 2>&1; then
-    echo -e "  ${GREEN}✓${NC} GFPGAN installed"
+
+# Check Python version - 3.13+ has exec() compatibility issue with basicsr
+# See: https://github.com/TencentARC/GFPGAN/pull/619
+PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
+if [ "$PYTHON_MINOR" -ge 13 ]; then
+    echo "  [Python 3.13+ detected - using compatible basicsr fork]"
+    # Install basicsr from Disty0's fork with Python 3.13 fix (master branch)
+    # Then install gfpgan without deps since basicsr is already installed
+    if pip install git+https://github.com/Disty0/BasicSR.git --quiet 2>&1 && \
+       pip install gfpgan --no-deps --quiet 2>&1; then
+        echo -e "  ${GREEN}✓${NC} GFPGAN installed (Python 3.13 compatible)"
+    else
+        echo -e "  ${YELLOW}!${NC} GFPGAN failed - enhancement disabled (swap still works)"
+    fi
 else
-    echo -e "  ${YELLOW}!${NC} GFPGAN failed - enhancement disabled (swap still works)"
+    # Python 3.12 and earlier - normal install works fine
+    if pip install gfpgan --quiet 2>&1; then
+        echo -e "  ${GREEN}✓${NC} GFPGAN installed"
+    else
+        echo -e "  ${YELLOW}!${NC} GFPGAN failed - enhancement disabled (swap still works)"
+    fi
 fi
 
 deactivate
