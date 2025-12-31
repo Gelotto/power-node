@@ -6,6 +6,8 @@ import numpy as np
 import imageio.v3 as iio
 from PIL import Image
 
+from .constants import MAX_IMAGE_DIMENSION
+
 
 class GifProcessor:
     """Process GIFs for face swapping with optional enhancement."""
@@ -40,25 +42,33 @@ class GifProcessor:
         Returns:
             The processed GIF as bytes
         """
-        # Read GIF frames
+        # SECURITY: Validate dimensions BEFORE loading all frames to prevent OOM
+        # Use PIL to read GIF header without decoding all frames
+        gif_file = io.BytesIO(gif_data)
+        with Image.open(gif_file) as pil_img:
+            target_w, target_h = pil_img.size
+            if target_h > MAX_IMAGE_DIMENSION or target_w > MAX_IMAGE_DIMENSION:
+                raise ValueError(
+                    f"GIF dimensions too large: {target_w}x{target_h} "
+                    f"(max: {MAX_IMAGE_DIMENSION}x{MAX_IMAGE_DIMENSION}). "
+                    "Please resize the GIF before processing."
+                )
+
+        # Get metadata for duration (before loading frames)
+        metadata = iio.immeta(gif_data)
+        duration = metadata.get("duration", 100)  # Default 100ms per frame
+
+        # Now safe to load all frames (dimensions validated)
         frames = iio.imread(gif_data, index=None)
 
         if len(frames) == 0:
             raise ValueError("No frames found in GIF")
-
-        # Get metadata for duration
-        metadata = iio.immeta(gif_data)
-        duration = metadata.get("duration", 100)  # Default 100ms per frame
 
         # Limit frames
         if len(frames) > max_frames:
             # Sample frames evenly
             indices = np.linspace(0, len(frames) - 1, max_frames, dtype=int)
             frames = [frames[i] for i in indices]
-
-        # Capture target dimensions from first frame for consistency
-        # All output frames must have identical dimensions for GIF writing
-        target_h, target_w = frames[0].shape[:2]
 
         processed_frames = []
         frames_swapped = 0  # Track successful swaps

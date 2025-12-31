@@ -151,12 +151,36 @@ def load_image(path: str) -> np.ndarray:
     return img
 
 
-def load_image_from_bytes(data: bytes) -> np.ndarray:
-    """Load an image from bytes."""
+from .constants import MAX_IMAGE_DIMENSION
+
+
+def load_image_from_bytes(data: bytes, max_dim: int = MAX_IMAGE_DIMENSION) -> np.ndarray:
+    """
+    Load an image from bytes with dimension validation.
+
+    Args:
+        data: Raw image bytes
+        max_dim: Maximum allowed dimension (width or height)
+
+    Returns:
+        Image as numpy array (BGR format)
+
+    Raises:
+        ValueError: If image fails to decode or exceeds max dimensions
+    """
     nparr = np.frombuffer(data, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError("Failed to decode image from bytes")
+
+    # Validate dimensions to prevent OOM attacks
+    h, w = img.shape[:2]
+    if h > max_dim or w > max_dim:
+        raise ValueError(
+            f"Image dimensions too large: {w}x{h} (max: {max_dim}x{max_dim}). "
+            "Please resize the image before processing."
+        )
+
     return img
 
 

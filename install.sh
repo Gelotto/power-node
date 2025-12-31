@@ -592,6 +592,51 @@ import io
 import os
 import argparse
 import random
+import time
+import threading
+from urllib.parse import urlparse
+
+# Security constants - allowed hosts for face-swap image downloads
+# storage.picshapes.com: S3 storage where user uploads go
+# api.gelotto.io: Primary worker API domain
+# api.picshapes.com: Legacy API domain (for backwards compatibility)
+ALLOWED_HOSTS = ['storage.picshapes.com', 'api.gelotto.io', 'api.picshapes.com']
+MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024  # 20MB
+FACESWAP_IDLE_TIMEOUT = 300  # 5 minutes
+
+
+def validate_image_url(url):
+    """Validate URL is from allowed hosts (SSRF protection)."""
+    parsed = urlparse(url)
+    if parsed.scheme != 'https':
+        raise ValueError(f"Only HTTPS URLs allowed, got: {parsed.scheme}")
+    if parsed.hostname not in ALLOWED_HOSTS:
+        raise ValueError(f"URL host not allowed: {parsed.hostname}")
+    return url
+
+
+def download_with_limit(url, max_bytes=MAX_DOWNLOAD_SIZE, timeout=30):
+    """Download URL content with size limit to prevent DoS."""
+    import requests
+
+    resp = requests.get(url, stream=True, timeout=timeout)
+    resp.raise_for_status()
+
+    # Check Content-Length header if available
+    content_length = resp.headers.get('content-length')
+    if content_length and int(content_length) > max_bytes:
+        raise ValueError(f"File too large: {content_length} bytes (max: {max_bytes})")
+
+    # Stream download with size check
+    chunks = []
+    downloaded = 0
+    for chunk in resp.iter_content(chunk_size=8192):
+        downloaded += len(chunk)
+        if downloaded > max_bytes:
+            raise ValueError(f"Download exceeded size limit: {downloaded} bytes (max: {max_bytes})")
+        chunks.append(chunk)
+
+    return b''.join(chunks)
 
 
 def detect_vram_gb():
@@ -615,6 +660,29 @@ class InferenceService:
         self.text_encoder_path = text_encoder_path
         self.vram_gb = vram_gb or detect_vram_gb()
         self.sd = None
+        # Face-swap model lifecycle tracking
+        self._face_swapper = None
+        self._faceswap_funcs = None
+        self._last_faceswap_time = 0
+        self._faceswap_lock = threading.Lock()  # Protects face-swap model access
+        self._start_cleanup_thread()
+
+    def _start_cleanup_thread(self):
+        """Start background thread to unload idle face-swap models."""
+        def cleanup_loop():
+            while True:
+                time.sleep(60)  # Check every minute
+                with self._faceswap_lock:
+                    if self._face_swapper and time.time() - self._last_faceswap_time > FACESWAP_IDLE_TIMEOUT:
+                        sys.stderr.write("Unloading idle face-swap models (5 min timeout)...\n")
+                        sys.stderr.flush()
+                        self._face_swapper = None
+                        self._faceswap_funcs = None
+                        import gc
+                        gc.collect()
+
+        t = threading.Thread(target=cleanup_loop, daemon=True)
+        t.start()
 
     def initialize(self):
         from stable_diffusion_cpp import StableDiffusion
@@ -695,52 +763,61 @@ class InferenceService:
         )
 
     def face_swap(self, source_image_url, target_image_url, is_gif=False, swap_all_faces=True, enhance=True, max_frames=100):
-        """Perform face swap on images or GIFs."""
-        import requests
+        """Perform face swap on images or GIFs with security validation."""
+        # Validate URLs (SSRF protection) - outside lock
+        source_image_url = validate_image_url(source_image_url)
+        target_image_url = validate_image_url(target_image_url)
 
-        # Lazy load face swapper
-        if not hasattr(self, '_face_swapper') or self._face_swapper is None:
-            model_path = os.environ.get("FACESWAP_MODEL_PATH", "")
-            if not model_path:
-                raise ValueError("Face swap not available: FACESWAP_MODEL_PATH not set")
+        # Acquire lock for model check/load and timestamp update
+        with self._faceswap_lock:
+            self._last_faceswap_time = time.time()
 
-            sys.stderr.write(f"Loading face swap models from {model_path}...\n")
-            sys.stderr.flush()
+            # Lazy load face swapper
+            if self._face_swapper is None:
+                model_path = os.environ.get("FACESWAP_MODEL_PATH", "")
+                if not model_path:
+                    raise ValueError("Face swap not available: FACESWAP_MODEL_PATH not set")
 
-            # Add scripts directory to path for faceswap module
-            scripts_dir = os.path.dirname(os.path.abspath(__file__))
-            if scripts_dir not in sys.path:
-                sys.path.insert(0, scripts_dir)
+                sys.stderr.write(f"Loading face swap models from {model_path}...\n")
+                sys.stderr.flush()
 
-            from faceswap import FaceSwapper, load_image_from_bytes, image_to_bytes, GifProcessor
-            self._face_swapper = FaceSwapper(model_dir=model_path, enable_enhancement=enhance)
-            self._faceswap_funcs = {
-                'load_image_from_bytes': load_image_from_bytes,
-                'image_to_bytes': image_to_bytes,
-                'GifProcessor': GifProcessor,
-            }
-            sys.stderr.write("Face swap models loaded.\n")
-            sys.stderr.flush()
+                # Add scripts directory to path for faceswap module
+                scripts_dir = os.path.dirname(os.path.abspath(__file__))
+                if scripts_dir not in sys.path:
+                    sys.path.insert(0, scripts_dir)
 
+                from faceswap import FaceSwapper, load_image_from_bytes, image_to_bytes, GifProcessor
+                self._face_swapper = FaceSwapper(model_dir=model_path, enable_enhancement=enhance)
+                self._faceswap_funcs = {
+                    'load_image_from_bytes': load_image_from_bytes,
+                    'image_to_bytes': image_to_bytes,
+                    'GifProcessor': GifProcessor,
+                }
+                sys.stderr.write("Face swap models loaded.\n")
+                sys.stderr.flush()
+
+            # Get references while holding lock (prevents cleanup during processing)
+            swapper = self._face_swapper
+            funcs = self._faceswap_funcs
+
+        # Processing happens outside lock to avoid blocking other requests
         sys.stderr.write(f"Face swap: is_gif={is_gif}, swap_all={swap_all_faces}, enhance={enhance}\n")
         sys.stderr.flush()
 
-        # Download source image
-        source_resp = requests.get(source_image_url, timeout=30)
-        source_resp.raise_for_status()
-        source_img = self._faceswap_funcs['load_image_from_bytes'](source_resp.content)
+        # Download source image with size limit (DoS protection)
+        source_data = download_with_limit(source_image_url)
+        source_img = funcs['load_image_from_bytes'](source_data)
 
-        # Download target
-        target_resp = requests.get(target_image_url, timeout=30)
-        target_resp.raise_for_status()
+        # Download target with size limit
+        target_data = download_with_limit(target_image_url)
 
         if is_gif:
             # Process GIF frame by frame
-            processor = self._faceswap_funcs['GifProcessor'](
-                self._face_swapper,
-                enhancer=self._face_swapper.enhancer if enhance else None
+            processor = funcs['GifProcessor'](
+                swapper,
+                enhancer=swapper.enhancer if enhance else None
             )
-            result_bytes = processor.process_gif(source_img, target_resp.content, max_frames=max_frames, enhance=enhance)
+            result_bytes = processor.process_gif(source_img, target_data, max_frames=max_frames, enhance=enhance)
             return {
                 "image_data": base64.b64encode(result_bytes).decode(),
                 "format": "gif",
@@ -748,9 +825,9 @@ class InferenceService:
             }
         else:
             # Process single image
-            target_img = self._faceswap_funcs['load_image_from_bytes'](target_resp.content)
-            result_img = self._face_swapper.swap(source_img, target_img, swap_all=swap_all_faces, enhance=enhance)
-            result_bytes = self._faceswap_funcs['image_to_bytes'](result_img, ".jpg", quality=95)
+            target_img = funcs['load_image_from_bytes'](target_data)
+            result_img = swapper.swap(source_img, target_img, swap_all=swap_all_faces, enhance=enhance)
+            result_bytes = funcs['image_to_bytes'](result_img, ".jpg", quality=95)
             return {
                 "image_data": base64.b64encode(result_bytes).decode(),
                 "format": "jpeg",
@@ -817,6 +894,51 @@ import os
 import argparse
 import random
 import gc
+import time
+import threading
+from urllib.parse import urlparse
+
+# Security constants - allowed hosts for face-swap image downloads
+# storage.picshapes.com: S3 storage where user uploads go
+# api.gelotto.io: Primary worker API domain
+# api.picshapes.com: Legacy API domain (for backwards compatibility)
+ALLOWED_HOSTS = ['storage.picshapes.com', 'api.gelotto.io', 'api.picshapes.com']
+MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024  # 20MB
+FACESWAP_IDLE_TIMEOUT = 300  # 5 minutes
+
+
+def validate_image_url(url):
+    """Validate URL is from allowed hosts (SSRF protection)."""
+    parsed = urlparse(url)
+    if parsed.scheme != 'https':
+        raise ValueError(f"Only HTTPS URLs allowed, got: {parsed.scheme}")
+    if parsed.hostname not in ALLOWED_HOSTS:
+        raise ValueError(f"URL host not allowed: {parsed.hostname}")
+    return url
+
+
+def download_with_limit(url, max_bytes=MAX_DOWNLOAD_SIZE, timeout=30):
+    """Download URL content with size limit to prevent DoS."""
+    import requests
+
+    resp = requests.get(url, stream=True, timeout=timeout)
+    resp.raise_for_status()
+
+    # Check Content-Length header if available
+    content_length = resp.headers.get('content-length')
+    if content_length and int(content_length) > max_bytes:
+        raise ValueError(f"File too large: {content_length} bytes (max: {max_bytes})")
+
+    # Stream download with size check
+    chunks = []
+    downloaded = 0
+    for chunk in resp.iter_content(chunk_size=8192):
+        downloaded += len(chunk)
+        if downloaded > max_bytes:
+            raise ValueError(f"Download exceeded size limit: {downloaded} bytes (max: {max_bytes})")
+        chunks.append(chunk)
+
+    return b''.join(chunks)
 
 
 class InferenceService:
@@ -824,6 +946,31 @@ class InferenceService:
         self.model_path = model_path
         self.vae_path = vae_path
         self.pipe = None
+        # Face-swap model lifecycle tracking
+        self._face_swapper = None
+        self._faceswap_funcs = None
+        self._last_faceswap_time = 0
+        self._faceswap_lock = threading.Lock()  # Protects face-swap model access
+        self._start_cleanup_thread()
+
+    def _start_cleanup_thread(self):
+        """Start background thread to unload idle face-swap models."""
+        def cleanup_loop():
+            import torch
+            while True:
+                time.sleep(60)  # Check every minute
+                with self._faceswap_lock:
+                    if self._face_swapper and time.time() - self._last_faceswap_time > FACESWAP_IDLE_TIMEOUT:
+                        sys.stderr.write("Unloading idle face-swap models (5 min timeout)...\n")
+                        sys.stderr.flush()
+                        self._face_swapper = None
+                        self._faceswap_funcs = None
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+        t = threading.Thread(target=cleanup_loop, daemon=True)
+        t.start()
 
     def initialize(self):
         import torch
@@ -1067,52 +1214,61 @@ class InferenceService:
         }
 
     def face_swap(self, source_image_url, target_image_url, is_gif=False, swap_all_faces=True, enhance=True, max_frames=100):
-        """Perform face swap on images or GIFs."""
-        import requests
+        """Perform face swap on images or GIFs with security validation."""
+        # Validate URLs (SSRF protection) - outside lock
+        source_image_url = validate_image_url(source_image_url)
+        target_image_url = validate_image_url(target_image_url)
 
-        # Lazy load face swapper
-        if not hasattr(self, '_face_swapper') or self._face_swapper is None:
-            model_path = os.environ.get("FACESWAP_MODEL_PATH", "")
-            if not model_path:
-                raise ValueError("Face swap not available: FACESWAP_MODEL_PATH not set")
+        # Acquire lock for model check/load and timestamp update
+        with self._faceswap_lock:
+            self._last_faceswap_time = time.time()
 
-            sys.stderr.write(f"Loading face swap models from {model_path}...\n")
-            sys.stderr.flush()
+            # Lazy load face swapper
+            if self._face_swapper is None:
+                model_path = os.environ.get("FACESWAP_MODEL_PATH", "")
+                if not model_path:
+                    raise ValueError("Face swap not available: FACESWAP_MODEL_PATH not set")
 
-            # Add scripts directory to path for faceswap module
-            scripts_dir = os.path.dirname(os.path.abspath(__file__))
-            if scripts_dir not in sys.path:
-                sys.path.insert(0, scripts_dir)
+                sys.stderr.write(f"Loading face swap models from {model_path}...\n")
+                sys.stderr.flush()
 
-            from faceswap import FaceSwapper, load_image_from_bytes, image_to_bytes, GifProcessor
-            self._face_swapper = FaceSwapper(model_dir=model_path, enable_enhancement=enhance)
-            self._faceswap_funcs = {
-                'load_image_from_bytes': load_image_from_bytes,
-                'image_to_bytes': image_to_bytes,
-                'GifProcessor': GifProcessor,
-            }
-            sys.stderr.write("Face swap models loaded.\n")
-            sys.stderr.flush()
+                # Add scripts directory to path for faceswap module
+                scripts_dir = os.path.dirname(os.path.abspath(__file__))
+                if scripts_dir not in sys.path:
+                    sys.path.insert(0, scripts_dir)
 
+                from faceswap import FaceSwapper, load_image_from_bytes, image_to_bytes, GifProcessor
+                self._face_swapper = FaceSwapper(model_dir=model_path, enable_enhancement=enhance)
+                self._faceswap_funcs = {
+                    'load_image_from_bytes': load_image_from_bytes,
+                    'image_to_bytes': image_to_bytes,
+                    'GifProcessor': GifProcessor,
+                }
+                sys.stderr.write("Face swap models loaded.\n")
+                sys.stderr.flush()
+
+            # Get references while holding lock (prevents cleanup during processing)
+            swapper = self._face_swapper
+            funcs = self._faceswap_funcs
+
+        # Processing happens outside lock to avoid blocking other requests
         sys.stderr.write(f"Face swap: is_gif={is_gif}, swap_all={swap_all_faces}, enhance={enhance}\n")
         sys.stderr.flush()
 
-        # Download source image
-        source_resp = requests.get(source_image_url, timeout=30)
-        source_resp.raise_for_status()
-        source_img = self._faceswap_funcs['load_image_from_bytes'](source_resp.content)
+        # Download source image with size limit (DoS protection)
+        source_data = download_with_limit(source_image_url)
+        source_img = funcs['load_image_from_bytes'](source_data)
 
-        # Download target
-        target_resp = requests.get(target_image_url, timeout=30)
-        target_resp.raise_for_status()
+        # Download target with size limit
+        target_data = download_with_limit(target_image_url)
 
         if is_gif:
             # Process GIF frame by frame
-            processor = self._faceswap_funcs['GifProcessor'](
-                self._face_swapper,
-                enhancer=self._face_swapper.enhancer if enhance else None
+            processor = funcs['GifProcessor'](
+                swapper,
+                enhancer=swapper.enhancer if enhance else None
             )
-            result_bytes = processor.process_gif(source_img, target_resp.content, max_frames=max_frames, enhance=enhance)
+            result_bytes = processor.process_gif(source_img, target_data, max_frames=max_frames, enhance=enhance)
             return {
                 "image_data": base64.b64encode(result_bytes).decode(),
                 "format": "gif",
@@ -1120,9 +1276,9 @@ class InferenceService:
             }
         else:
             # Process single image
-            target_img = self._faceswap_funcs['load_image_from_bytes'](target_resp.content)
-            result_img = self._face_swapper.swap(source_img, target_img, swap_all=swap_all_faces, enhance=enhance)
-            result_bytes = self._faceswap_funcs['image_to_bytes'](result_img, ".jpg", quality=95)
+            target_img = funcs['load_image_from_bytes'](target_data)
+            result_img = swapper.swap(source_img, target_img, swap_all=swap_all_faces, enhance=enhance)
+            result_bytes = funcs['image_to_bytes'](result_img, ".jpg", quality=95)
             return {
                 "image_data": base64.b64encode(result_bytes).decode(),
                 "format": "jpeg",
