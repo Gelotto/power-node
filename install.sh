@@ -8,15 +8,21 @@ set -e
 # Parse command line arguments
 SKIP_VIDEO=false
 SKIP_FACESWAP=false
+IMAGE_MODEL=""  # Will be set interactively or via --model flag
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --no-video) SKIP_VIDEO=true ;;
         --no-faceswap) SKIP_FACESWAP=true ;;
         --minimal) SKIP_VIDEO=true; SKIP_FACESWAP=true ;;
+        --model)
+            IMAGE_MODEL="$2"
+            shift
+            ;;
         --help|-h)
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
+            echo "  --model MODEL   Select image model: z-image-turbo (default) or flux-schnell"
             echo "  --no-video      Skip video model (auto-downloaded for 12GB+ VRAM PyTorch GPUs)"
             echo "  --no-faceswap   Skip face-swap model (auto-downloaded for 6GB+ VRAM)"
             echo "  --minimal       Skip all optional models (video + face-swap)"
@@ -168,6 +174,65 @@ else
 fi
 
 echo -e "${GREEN}  ✓ GPU validated${NC}"
+
+# =============================================================================
+# Model Selection
+# =============================================================================
+echo -e "${YELLOW}[3.5/7] Selecting image generation model...${NC}"
+
+# If not specified via --model flag, show interactive menu
+if [ -z "$IMAGE_MODEL" ]; then
+    echo ""
+    echo "Available image generation models:"
+    echo -e "  ${GREEN}1)${NC} Z-Image-Turbo (default) - Fast generation, 8GB+ VRAM"
+    echo -e "  ${BLUE}2)${NC} FLUX.1-schnell - Ultra-fast, excellent prompt understanding, 12GB+ VRAM"
+    echo ""
+
+    # Interactive selection if running in terminal
+    if [ -t 0 ]; then
+        read -p "Select model [1]: " MODEL_CHOICE < /dev/tty
+    else
+        MODEL_CHOICE="1"
+        echo "  Non-interactive mode: defaulting to Z-Image-Turbo"
+    fi
+
+    case "$MODEL_CHOICE" in
+        2)
+            IMAGE_MODEL="flux-schnell"
+            ;;
+        *)
+            IMAGE_MODEL="z-image-turbo"
+            ;;
+    esac
+fi
+
+# Validate model choice
+case "$IMAGE_MODEL" in
+    z-image-turbo|flux-schnell)
+        ;;
+    *)
+        echo -e "${RED}ERROR: Invalid model '$IMAGE_MODEL'. Use 'z-image-turbo' or 'flux-schnell'.${NC}"
+        exit 1
+        ;;
+esac
+
+# VRAM warnings for FLUX
+if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
+    if [ $VRAM_GB -lt 10 ]; then
+        echo -e "${RED}ERROR: FLUX.1-schnell requires at least 10GB VRAM. Your GPU has ${VRAM_GB}GB.${NC}"
+        echo "Please choose Z-Image-Turbo instead (supports 8GB+ VRAM)."
+        exit 1
+    elif [ $VRAM_GB -lt 12 ]; then
+        echo -e "${YELLOW}  Warning: FLUX.1-schnell works best with 12GB+ VRAM.${NC}"
+        echo -e "${YELLOW}  Using aggressive quantization (Q4) for ${VRAM_GB}GB VRAM.${NC}"
+    fi
+    # FLUX workers don't support video or face-swap
+    SKIP_VIDEO=true
+    SKIP_FACESWAP=true
+    echo -e "${YELLOW}  Note: Video and face-swap are not available with FLUX.1-schnell.${NC}"
+fi
+
+echo -e "  Selected model: ${GREEN}$IMAGE_MODEL${NC}"
 
 # =============================================================================
 # Create Directory Structure
@@ -442,10 +507,17 @@ echo -e "${YELLOW}[7/7] Downloading models...${NC}"
 AVAILABLE_KB=$(df -k "$INSTALL_DIR" | tail -1 | awk '{print $4}')
 AVAILABLE_GB=$((AVAILABLE_KB / 1024 / 1024))
 
-if [ "$SERVICE_MODE" = "gguf" ]; then
-    REQUIRED_GB=12  # ~9GB models + buffer
+# Disk space requirements per model/mode
+if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
+    if [ "$SERVICE_MODE" = "gguf" ]; then
+        REQUIRED_GB=25  # ~23GB FLUX GGUF models (diffusion + T5 + CLIP + VAE)
+    else
+        REQUIRED_GB=30  # ~24GB FLUX PyTorch model
+    fi
+elif [ "$SERVICE_MODE" = "gguf" ]; then
+    REQUIRED_GB=12  # ~9GB Z-Image models + buffer
 else
-    REQUIRED_GB=35  # ~31GB PyTorch models + buffer
+    REQUIRED_GB=35  # ~31GB Z-Image PyTorch models + buffer
 fi
 
 if [ "$AVAILABLE_GB" -lt "$REQUIRED_GB" ]; then
@@ -507,45 +579,136 @@ check_disk_space_warning() {
 }
 
 if [ "$SERVICE_MODE" = "gguf" ]; then
-    if [ $VRAM_GB -lt 10 ]; then
-        QUANT="Q4_0"
+    if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
+        # =============================================================================
+        # FLUX.1-schnell GGUF Mode Downloads
+        # =============================================================================
+        echo "  Downloading FLUX.1-schnell (GGUF mode)..."
+
+        # Determine quantization based on VRAM
+        if [ $VRAM_GB -lt 12 ]; then
+            FLUX_QUANT="Q4_K_S"
+            echo "  Using Q4_K_S quantization for ${VRAM_GB}GB VRAM"
+        else
+            FLUX_QUANT="Q8_0"
+            echo "  Using Q8_0 quantization for ${VRAM_GB}GB VRAM"
+        fi
+
+        # Create FLUX directory structure
+        mkdir -p "$INSTALL_DIR/models/flux-schnell"/{diffusion,text_encoder,vae}
+
+        # Download diffusion model
+        download_file \
+            "$HF_BASE/city96/FLUX.1-schnell-gguf/resolve/main/flux1-schnell-${FLUX_QUANT}.gguf" \
+            "$INSTALL_DIR/models/flux-schnell/diffusion/flux1-schnell-${FLUX_QUANT}.gguf" \
+            "FLUX diffusion model (${FLUX_QUANT})"
+
+        # Download CLIP-L text encoder
+        download_file \
+            "$HF_BASE/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors" \
+            "$INSTALL_DIR/models/flux-schnell/text_encoder/clip_l.safetensors" \
+            "CLIP-L text encoder"
+
+        # Download T5-XXL text encoder (large but better quality than GGUF)
+        echo "  Downloading T5-XXL text encoder (~10GB, this takes a while)..."
+        download_file \
+            "$HF_BASE/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors" \
+            "$INSTALL_DIR/models/flux-schnell/text_encoder/t5xxl_fp16.safetensors" \
+            "T5-XXL text encoder"
+
+        # Download VAE
+        download_file \
+            "$HF_BASE/ffxvs/vae-flux/resolve/main/ae.safetensors" \
+            "$INSTALL_DIR/models/flux-schnell/vae/ae.safetensors" \
+            "VAE"
+
+        FLUX_DIFFUSION_PATH="$INSTALL_DIR/models/flux-schnell/diffusion/flux1-schnell-${FLUX_QUANT}.gguf"
+        FLUX_CLIP_PATH="$INSTALL_DIR/models/flux-schnell/text_encoder/clip_l.safetensors"
+        FLUX_T5_PATH="$INSTALL_DIR/models/flux-schnell/text_encoder/t5xxl_fp16.safetensors"
+        FLUX_VAE_PATH="$INSTALL_DIR/models/flux-schnell/vae/ae.safetensors"
+
     else
-        QUANT="Q8_0"
+        # =============================================================================
+        # Z-Image-Turbo GGUF Mode Downloads
+        # =============================================================================
+        if [ $VRAM_GB -lt 10 ]; then
+            QUANT="Q4_0"
+        else
+            QUANT="Q8_0"
+        fi
+
+        download_file \
+            "$HF_BASE/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-${QUANT}.gguf" \
+            "$INSTALL_DIR/models/diffusion/z_image_turbo-${QUANT}.gguf" \
+            "Diffusion model (${QUANT})"
+
+        download_file \
+            "$HF_BASE/ffxvs/vae-flux/resolve/main/ae.safetensors" \
+            "$INSTALL_DIR/models/vae/ae.safetensors" \
+            "VAE"
+
+        download_file \
+            "$HF_BASE/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" \
+            "$INSTALL_DIR/models/text_encoder/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" \
+            "Text encoder"
+
+        DIFFUSION_PATH="$INSTALL_DIR/models/diffusion/z_image_turbo-${QUANT}.gguf"
+        VAE_PATH="$INSTALL_DIR/models/vae/ae.safetensors"
+        TEXT_ENCODER_PATH="$INSTALL_DIR/models/text_encoder/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
     fi
-
-    download_file \
-        "$HF_BASE/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-${QUANT}.gguf" \
-        "$INSTALL_DIR/models/diffusion/z_image_turbo-${QUANT}.gguf" \
-        "Diffusion model (${QUANT})"
-
-    download_file \
-        "$HF_BASE/ffxvs/vae-flux/resolve/main/ae.safetensors" \
-        "$INSTALL_DIR/models/vae/ae.safetensors" \
-        "VAE"
-
-    download_file \
-        "$HF_BASE/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" \
-        "$INSTALL_DIR/models/text_encoder/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" \
-        "Text encoder"
-
-    DIFFUSION_PATH="$INSTALL_DIR/models/diffusion/z_image_turbo-${QUANT}.gguf"
-    VAE_PATH="$INSTALL_DIR/models/vae/ae.safetensors"
-    TEXT_ENCODER_PATH="$INSTALL_DIR/models/text_encoder/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 else
     # PyTorch mode - download full model via huggingface-cli
-    echo "  Downloading Z-Image-Turbo model (PyTorch, ~31GB)..."
-    echo "  This may take a while on slower connections..."
+    if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
+        # =============================================================================
+        # FLUX.1-schnell PyTorch Mode Downloads
+        # =============================================================================
+        echo "  Downloading FLUX.1-schnell model (PyTorch, ~24GB)..."
+        echo "  This may take a while on slower connections..."
 
-    MODEL_DIR="$INSTALL_DIR/models/z-image-turbo"
-    if [ -d "$MODEL_DIR" ] && [ -f "$MODEL_DIR/model_index.json" ]; then
-        echo -e "  ${GREEN}✓${NC} Z-Image-Turbo (cached)"
-    else
-        source "$INSTALL_DIR/venv/bin/activate"
-        if ! pip install huggingface_hub --quiet; then
-            echo -e "${RED}ERROR: Failed to install huggingface_hub${NC}"
-            exit 1
+        FLUX_MODEL_DIR="$INSTALL_DIR/models/flux-schnell"
+        if [ -d "$FLUX_MODEL_DIR" ] && [ -f "$FLUX_MODEL_DIR/model_index.json" ]; then
+            echo -e "  ${GREEN}✓${NC} FLUX.1-schnell (cached)"
+        else
+            source "$INSTALL_DIR/venv/bin/activate"
+            if ! pip install huggingface_hub --quiet; then
+                echo -e "${RED}ERROR: Failed to install huggingface_hub${NC}"
+                exit 1
+            fi
+            python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download(
+    'black-forest-labs/FLUX.1-schnell',
+    local_dir='$FLUX_MODEL_DIR',
+    local_dir_use_symlinks=False,
+    ignore_patterns=['*.md', '*.txt', '.gitattributes']
+)
+"
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}ERROR: Failed to download FLUX.1-schnell model${NC}"
+                exit 1
+            fi
+            deactivate
         fi
-        python3 -c "
+
+        # FLUX PyTorch uses built-in VAE, no separate download needed
+        echo -e "  ${GREEN}✓${NC} FLUX model ready"
+    else
+        # =============================================================================
+        # Z-Image-Turbo PyTorch Mode Downloads
+        # =============================================================================
+        echo "  Downloading Z-Image-Turbo model (PyTorch, ~31GB)..."
+        echo "  This may take a while on slower connections..."
+
+        MODEL_DIR="$INSTALL_DIR/models/z-image-turbo"
+        if [ -d "$MODEL_DIR" ] && [ -f "$MODEL_DIR/model_index.json" ]; then
+            echo -e "  ${GREEN}✓${NC} Z-Image-Turbo (cached)"
+        else
+            source "$INSTALL_DIR/venv/bin/activate"
+            if ! pip install huggingface_hub --quiet; then
+                echo -e "${RED}ERROR: Failed to install huggingface_hub${NC}"
+                exit 1
+            fi
+            python3 -c "
 from huggingface_hub import snapshot_download
 snapshot_download(
     'Tongyi-MAI/Z-Image-Turbo',
@@ -553,18 +716,19 @@ snapshot_download(
     local_dir_use_symlinks=False
 )
 "
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}ERROR: Failed to download Z-Image-Turbo model${NC}"
-            exit 1
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}ERROR: Failed to download Z-Image-Turbo model${NC}"
+                exit 1
+            fi
+            deactivate
         fi
-        deactivate
-    fi
 
-    # Also need VAE for PyTorch (from public Comfy-Org repo)
-    download_file \
-        "$HF_BASE/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors" \
-        "$INSTALL_DIR/models/vae/ae.safetensors" \
-        "VAE"
+        # Also need VAE for PyTorch (from public Comfy-Org repo)
+        download_file \
+            "$HF_BASE/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors" \
+            "$INSTALL_DIR/models/vae/ae.safetensors" \
+            "VAE"
+    fi
 
     # =============================================================================
     # Video Generation Support (Auto-detected based on GPU capability)
@@ -731,7 +895,188 @@ echo -e "${GREEN}  ✓ Shared utilities created${NC}"
 # Create Inference Script
 # =============================================================================
 if [ "$SERVICE_MODE" = "gguf" ]; then
-cat > "$INSTALL_DIR/scripts/inference.py" << 'INFERENCE_EOF'
+    if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
+        # FLUX GGUF inference script
+        cat > "$INSTALL_DIR/scripts/inference.py" << 'FLUX_GGUF_EOF'
+#!/usr/bin/env python3
+"""
+Power Node Inference Service (FLUX GGUF/stable-diffusion.cpp)
+FLUX.1-schnell model with GGUF quantization for 10-16GB GPUs
+"""
+
+import sys
+import json
+import base64
+import io
+import os
+import argparse
+
+def detect_vram_gb():
+    """Detect available VRAM in GB."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip().split('\n')[0]) // 1024
+    except:
+        pass
+    return 12  # Conservative default
+
+
+class FLUXInferenceService:
+    """FLUX.1-schnell inference via stable-diffusion.cpp GGUF"""
+
+    def __init__(self, diffusion_path, clip_path, t5_path, vae_path, vram_gb=None):
+        self.diffusion_path = diffusion_path
+        self.clip_path = clip_path
+        self.t5_path = t5_path
+        self.vae_path = vae_path
+        self.vram_gb = vram_gb or detect_vram_gb()
+        self.sd = None
+
+    def initialize(self):
+        from stable_diffusion_cpp import StableDiffusion
+
+        sys.stderr.write("=== Power Node FLUX Inference (GGUF) ===\n")
+        sys.stderr.write(f"VRAM: {self.vram_gb}GB\n")
+        sys.stderr.flush()
+
+        for path, name in [
+            (self.diffusion_path, "Diffusion"),
+            (self.clip_path, "CLIP-L"),
+            (self.t5_path, "T5-XXL"),
+            (self.vae_path, "VAE")
+        ]:
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"{name} not found: {path}")
+
+        # Memory optimization based on VRAM
+        offload = self.vram_gb < 14
+        keep_vae_cpu = self.vram_gb < 16
+        use_flash = self.vram_gb >= 10
+
+        sys.stderr.write("Loading FLUX model...\n")
+        sys.stderr.flush()
+
+        self.sd = StableDiffusion(
+            diffusion_model_path=self.diffusion_path,
+            clip_l_path=self.clip_path,
+            t5xxl_path=self.t5_path,
+            vae_path=self.vae_path,
+            vae_decode_only=True,
+            n_threads=-1,
+            wtype="default",
+            rng_type="cuda",
+            offload_params_to_cpu=offload,
+            keep_clip_on_cpu=offload,
+            keep_vae_on_cpu=keep_vae_cpu,
+            diffusion_flash_attn=use_flash,
+            verbose=True,
+        )
+
+        sys.stderr.write("FLUX model ready.\n")
+        sys.stderr.flush()
+
+    def generate(self, prompt, width, height, steps, seed=None, negative_prompt=None):
+        """Generate image with FLUX.1-schnell"""
+        if seed is None:
+            import random
+            seed = random.randint(0, 2**31 - 1)
+
+        # FLUX.1-schnell uses 1-4 steps max
+        steps = min(steps, 4)
+
+        sys.stderr.write(f"Generating: {width}x{height}, {steps} steps, seed={seed}\n")
+        sys.stderr.flush()
+
+        images = self.sd.txt_to_img(
+            prompt=prompt,
+            negative_prompt=negative_prompt or "",
+            width=width,
+            height=height,
+            sample_steps=steps,
+            cfg_scale=1.0,  # FLUX uses minimal CFG
+            seed=seed,
+        )
+
+        if not images:
+            raise RuntimeError("No image generated")
+
+        img = images[0]
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("utf-8"), "png"
+
+    def handle_request(self, req):
+        method = req.get("method")
+        params = req.get("params", {})
+
+        if method == "generate":
+            img_data, fmt = self.generate(
+                prompt=params.get("prompt", ""),
+                width=params.get("width", 1024),
+                height=params.get("height", 1024),
+                steps=params.get("steps", 4),
+                seed=params.get("seed"),
+                negative_prompt=params.get("negative_prompt"),
+            )
+            return {"image_data": img_data, "format": fmt}
+        elif method == "generate_video":
+            raise ValueError("Video generation not supported with FLUX.1-schnell")
+        elif method == "face_swap":
+            raise ValueError("Face swap not supported with FLUX.1-schnell")
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+    def run(self):
+        """Main JSON-RPC loop"""
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                req = json.loads(line)
+                req_id = req.get("id")
+                result = self.handle_request(req)
+                response = {"id": req_id, "result": result, "error": None}
+            except Exception as e:
+                sys.stderr.write(f"Error: {e}\n")
+                sys.stderr.flush()
+                response = {"id": req.get("id"), "result": None, "error": str(e)}
+
+            print(json.dumps(response), flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--diffusion", required=True, help="Path to FLUX GGUF diffusion model")
+    parser.add_argument("--clip", required=True, help="Path to CLIP-L encoder")
+    parser.add_argument("--t5", required=True, help="Path to T5-XXL encoder")
+    parser.add_argument("--vae", required=True, help="Path to VAE")
+    parser.add_argument("--vram", type=int, help="VRAM in GB")
+    args = parser.parse_args()
+
+    svc = FLUXInferenceService(args.diffusion, args.clip, args.t5, args.vae, args.vram)
+    try:
+        svc.initialize()
+        svc.run()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        sys.stderr.write(f"FATAL: {e}\n")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+FLUX_GGUF_EOF
+    else
+        # Z-Image GGUF inference script
+        cat > "$INSTALL_DIR/scripts/inference.py" << 'INFERENCE_EOF'
 #!/usr/bin/env python3
 """
 Power Node Inference Service (GGUF/stable-diffusion.cpp)
@@ -978,9 +1323,185 @@ def main():
 if __name__ == "__main__":
     main()
 INFERENCE_EOF
+    fi
 else
-# PyTorch inference script
-cat > "$INSTALL_DIR/scripts/inference.py" << 'INFERENCE_EOF'
+    if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
+        # FLUX PyTorch inference script
+        cat > "$INSTALL_DIR/scripts/inference.py" << 'FLUX_PYTORCH_EOF'
+#!/usr/bin/env python3
+"""
+Power Node Inference Service (FLUX PyTorch)
+FLUX.1-schnell for Blackwell GPUs (RTX 50-series) with 16GB+ VRAM
+"""
+
+import sys
+import json
+import base64
+import io
+import os
+import argparse
+import gc
+
+def detect_vram_gb():
+    """Detect available VRAM in GB."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip().split('\n')[0]) // 1024
+    except:
+        pass
+    return 16  # Conservative default
+
+
+class FLUXInferenceService:
+    """FLUX.1-schnell inference via diffusers FluxPipeline"""
+
+    def __init__(self, model_path, vram_gb=None):
+        self.model_path = model_path
+        self.vram_gb = vram_gb or detect_vram_gb()
+        self.pipe = None
+
+    def initialize(self):
+        import torch
+        from diffusers import FluxPipeline
+
+        sys.stderr.write("=== Power Node FLUX Inference (PyTorch) ===\n")
+        sys.stderr.write(f"VRAM: {self.vram_gb}GB\n")
+        sys.stderr.flush()
+
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Model not found: {self.model_path}")
+
+        sys.stderr.write("Loading FLUX.1-schnell...\n")
+        sys.stderr.flush()
+
+        self.pipe = FluxPipeline.from_pretrained(
+            self.model_path,
+            torch_dtype=torch.bfloat16,
+        )
+
+        # Memory optimization based on VRAM
+        if self.vram_gb < 20:
+            sys.stderr.write("Enabling model CPU offload for memory optimization\n")
+            self.pipe.enable_model_cpu_offload()
+        else:
+            self.pipe = self.pipe.to("cuda")
+
+        sys.stderr.write("FLUX.1-schnell ready.\n")
+        sys.stderr.flush()
+
+    def generate(self, prompt, width, height, steps, seed=None, negative_prompt=None):
+        """Generate image with FLUX.1-schnell"""
+        import torch
+
+        generator = None
+        if seed is not None:
+            generator = torch.Generator("cpu").manual_seed(seed)
+        else:
+            import random
+            seed = random.randint(0, 2**31 - 1)
+            generator = torch.Generator("cpu").manual_seed(seed)
+
+        # FLUX.1-schnell optimal: 1-4 steps
+        steps = min(steps, 4)
+
+        sys.stderr.write(f"Generating: {width}x{height}, {steps} steps, seed={seed}\n")
+        sys.stderr.flush()
+
+        # FLUX.1-schnell specific parameters
+        result = self.pipe(
+            prompt=prompt,
+            height=height,
+            width=width,
+            num_inference_steps=steps,
+            guidance_scale=0.0,  # CRITICAL: schnell is distilled, no CFG
+            max_sequence_length=256,
+            generator=generator,
+        )
+
+        image = result.images[0]
+
+        # Convert to base64 PNG
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("utf-8"), "png"
+
+    def handle_request(self, req):
+        method = req.get("method")
+        params = req.get("params", {})
+
+        if method == "generate":
+            img_data, fmt = self.generate(
+                prompt=params.get("prompt", ""),
+                width=params.get("width", 1024),
+                height=params.get("height", 1024),
+                steps=params.get("steps", 4),
+                seed=params.get("seed"),
+                negative_prompt=params.get("negative_prompt"),
+            )
+            return {"image_data": img_data, "format": fmt}
+        elif method == "generate_video":
+            raise ValueError("Video generation not supported with FLUX.1-schnell")
+        elif method == "face_swap":
+            raise ValueError("Face swap not supported with FLUX.1-schnell")
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+    def run(self):
+        """Main JSON-RPC loop"""
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                req = json.loads(line)
+                req_id = req.get("id")
+                result = self.handle_request(req)
+                response = {"id": req_id, "result": result, "error": None}
+            except Exception as e:
+                sys.stderr.write(f"Error: {e}\n")
+                sys.stderr.flush()
+                response = {"id": req.get("id"), "result": None, "error": str(e)}
+
+            # Clean up VRAM after each request
+            gc.collect()
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except:
+                pass
+
+            print(json.dumps(response), flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", required=True, help="Path to FLUX model")
+    parser.add_argument("--vram", type=int, help="VRAM in GB")
+    args = parser.parse_args()
+
+    svc = FLUXInferenceService(args.model, args.vram)
+    try:
+        svc.initialize()
+        svc.run()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        sys.stderr.write(f"FATAL: {e}\n")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+FLUX_PYTORCH_EOF
+    else
+        # Z-Image PyTorch inference script
+        cat > "$INSTALL_DIR/scripts/inference.py" << 'INFERENCE_EOF'
 #!/usr/bin/env python3
 """
 Power Node Inference Service (PyTorch/Z-Image-Turbo)
@@ -1390,6 +1911,7 @@ def main():
 if __name__ == "__main__":
     main()
 INFERENCE_EOF
+    fi
 fi
 
 chmod +x "$INSTALL_DIR/scripts/inference.py"
@@ -1485,7 +2007,48 @@ if [ -f "$INSTALL_DIR/config/config.yaml" ]; then
 fi
 
 if [ "$SERVICE_MODE" = "gguf" ]; then
-cat > "$INSTALL_DIR/config/config.yaml" << EOF
+    if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
+        # FLUX GGUF config
+        cat > "$INSTALL_DIR/config/config.yaml" << EOF
+# Power Node Configuration (FLUX GGUF Mode)
+# Register at https://gelotto.io/workers to get your credentials
+
+api:
+  url: $API_URL
+  key: "${EXISTING_API_KEY}"  # Your API key here
+
+model:
+  name: flux-schnell
+  service_mode: gguf
+  vram_gb: $VRAM_GB
+
+worker:
+  id: "${EXISTING_WORKER_ID}"  # Your worker ID here
+  hostname: "$(hostname)"
+  gpu_info: "$GPU_NAME"
+  poll_interval: 5s
+  heartbeat_interval: 30s
+
+python:
+  executable: $INSTALL_DIR/venv/bin/python3
+  script_path: $INSTALL_DIR/scripts/inference.py
+  script_args:
+    - "--diffusion"
+    - "$FLUX_DIFFUSION_PATH"
+    - "--clip"
+    - "$FLUX_CLIP_PATH"
+    - "--t5"
+    - "$FLUX_T5_PATH"
+    - "--vae"
+    - "$FLUX_VAE_PATH"
+    - "--vram"
+    - "$VRAM_GB"
+  env:
+    PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+EOF
+    else
+        # Z-Image GGUF config
+        cat > "$INSTALL_DIR/config/config.yaml" << EOF
 # Power Node Configuration
 # Register at https://gelotto.io/workers to get your credentials
 
@@ -1494,6 +2057,7 @@ api:
   key: "${EXISTING_API_KEY}"  # Your API key here
 
 model:
+  name: z-image-turbo
   service_mode: gguf
   vram_gb: $VRAM_GB
 
@@ -1520,9 +2084,46 @@ python:
     PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
     FACESWAP_MODEL_PATH: "$INSTALL_DIR/models/faceswap"
 EOF
+    fi
 else
-# PyTorch configuration
-cat > "$INSTALL_DIR/config/config.yaml" << EOF
+    # PyTorch configuration
+    if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
+        # FLUX PyTorch config
+        cat > "$INSTALL_DIR/config/config.yaml" << EOF
+# Power Node Configuration (FLUX PyTorch Mode)
+# Register at https://gelotto.io/workers to get your credentials
+
+api:
+  url: $API_URL
+  key: "${EXISTING_API_KEY}"  # Your API key here
+
+model:
+  name: flux-schnell
+  service_mode: pytorch
+  vram_gb: $VRAM_GB
+
+worker:
+  id: "${EXISTING_WORKER_ID}"  # Your worker ID here
+  hostname: "$(hostname)"
+  gpu_info: "$GPU_NAME"
+  poll_interval: 5s
+  heartbeat_interval: 30s
+
+python:
+  executable: $INSTALL_DIR/venv/bin/python3
+  script_path: $INSTALL_DIR/scripts/inference.py
+  script_args:
+    - "--model"
+    - "$INSTALL_DIR/models/flux-schnell"
+    - "--vram"
+    - "$VRAM_GB"
+  env:
+    PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+    HF_HOME: "$INSTALL_DIR/models/.cache"
+EOF
+    else
+        # Z-Image PyTorch config
+        cat > "$INSTALL_DIR/config/config.yaml" << EOF
 # Power Node Configuration (PyTorch Mode)
 # Register at https://gelotto.io/workers to get your credentials
 
@@ -1531,6 +2132,7 @@ api:
   key: "${EXISTING_API_KEY}"  # Your API key here
 
 model:
+  name: z-image-turbo
   service_mode: pytorch
   vram_gb: $VRAM_GB
 
@@ -1553,17 +2155,18 @@ python:
     FACESWAP_MODEL_PATH: "$INSTALL_DIR/models/faceswap"
 EOF
 
-# Only add video config if the video model was downloaded (check for model_index.json)
-if [ -f "$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers/model_index.json" ]; then
-    # Add WAN_MODEL_PATH to python.env for Python script
-    echo "    WAN_MODEL_PATH: \"$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers\"" >> "$INSTALL_DIR/config/config.yaml"
-    # Add video.model_path section for Go worker to detect video capability
-    cat >> "$INSTALL_DIR/config/config.yaml" << VIDEOEOF
+        # Only add video config if the video model was downloaded (check for model_index.json)
+        if [ -f "$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers/model_index.json" ]; then
+            # Add WAN_MODEL_PATH to python.env for Python script
+            echo "    WAN_MODEL_PATH: \"$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers\"" >> "$INSTALL_DIR/config/config.yaml"
+            # Add video.model_path section for Go worker to detect video capability
+            cat >> "$INSTALL_DIR/config/config.yaml" << VIDEOEOF
 
 video:
   model_path: "$INSTALL_DIR/models/Wan2.1-T2V-1.3B-Diffusers"
 VIDEOEOF
-fi
+        fi
+    fi
 fi
 
 # Add faceswap config if models were downloaded

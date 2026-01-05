@@ -356,16 +356,27 @@ func (w *Worker) processImageJob(ctx context.Context, job *models.Job) {
 	log.Printf("Processing image job %s...", job.ID)
 	startTime := time.Now()
 
+	// Validate model compatibility - prevent processing wrong model's jobs
+	if job.Model != "" && job.Model != w.config.Model.Name {
+		errMsg := fmt.Sprintf("model mismatch: job requires %s, worker has %s", job.Model, w.config.Model.Name)
+		log.Printf("Rejecting job %s: %s", job.ID, errMsg)
+		if err := w.apiClient.FailJob(ctx, w.id, job.ID, errMsg); err != nil {
+			log.Printf("Failed to report model mismatch for job %s: %v", job.ID, err)
+		}
+		return
+	}
+
 	if err := w.apiClient.StartProcessing(ctx, w.id, job.ID); err != nil {
 		log.Printf("Failed to notify processing start for job %s: %v", job.ID, err)
 	}
 
 	genReq := &models.GenerateRequest{
-		Prompt: job.Prompt,
-		Width:  job.Width,
-		Height: job.Height,
-		Steps:  job.Steps,
-		Seed:   job.Seed,
+		Prompt:         job.Prompt,
+		NegativePrompt: job.NegativePrompt,
+		Width:          job.Width,
+		Height:         job.Height,
+		Steps:          job.Steps,
+		Seed:           job.Seed,
 	}
 
 	result, err := w.pythonExec.Generate(ctx, genReq)
@@ -394,6 +405,16 @@ func (w *Worker) processImageJob(ctx context.Context, job *models.Job) {
 func (w *Worker) processVideoJob(ctx context.Context, job *models.Job) {
 	log.Printf("Processing video job %s...", job.ID)
 	startTime := time.Now()
+
+	// Validate model compatibility - prevent processing wrong model's jobs
+	if job.Model != "" && job.Model != w.config.Model.Name {
+		errMsg := fmt.Sprintf("model mismatch: job requires %s, worker has %s", job.Model, w.config.Model.Name)
+		log.Printf("Rejecting video job %s: %s", job.ID, errMsg)
+		if err := w.apiClient.FailJob(ctx, w.id, job.ID, errMsg); err != nil {
+			log.Printf("Failed to report model mismatch for job %s: %v", job.ID, err)
+		}
+		return
+	}
 
 	if err := w.apiClient.StartProcessing(ctx, w.id, job.ID); err != nil {
 		log.Printf("Failed to notify processing start for job %s: %v", job.ID, err)
@@ -493,6 +514,16 @@ func (w *Worker) processFaceSwapJob(ctx context.Context, job *models.Job) {
 	log.Printf("Processing face-swap job %s...", job.ID)
 	startTime := time.Now()
 
+	// Validate model compatibility - prevent processing wrong model's jobs
+	if job.Model != "" && job.Model != w.config.Model.Name {
+		errMsg := fmt.Sprintf("model mismatch: job requires %s, worker has %s", job.Model, w.config.Model.Name)
+		log.Printf("Rejecting face-swap job %s: %s", job.ID, errMsg)
+		if err := w.apiClient.FailJob(ctx, w.id, job.ID, errMsg); err != nil {
+			log.Printf("Failed to report model mismatch for job %s: %v", job.ID, err)
+		}
+		return
+	}
+
 	if err := w.apiClient.StartProcessing(ctx, w.id, job.ID); err != nil {
 		log.Printf("Failed to notify processing start for job %s: %v", job.ID, err)
 	}
@@ -589,8 +620,9 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 // buildHeartbeatData creates heartbeat data with capability information
 func (w *Worker) buildHeartbeatData() *client.HeartbeatData {
 	data := &client.HeartbeatData{
-		Hostname: w.hostname,
-		GPUInfo:  w.gpuInfo,
+		Hostname:   w.hostname,
+		GPUInfo:    w.gpuInfo,
+		ImageModel: w.config.Model.Name, // z-image-turbo or flux-schnell
 	}
 
 	if w.capabilities != nil {

@@ -50,6 +50,8 @@ type HeartbeatData struct {
 	ServiceMode   string
 	MaxResolution *int
 	MaxSteps      *int
+	// Image model (z-image-turbo, flux-schnell)
+	ImageModel string
 	// GPU metrics for idle detection
 	GPUUtilization *int // Current GPU utilization (0-100)
 	GPUMemoryUsed  *int // Current GPU memory used (MB)
@@ -96,6 +98,9 @@ func (c *APIClient) Heartbeat(ctx context.Context, workerID, status string, data
 		}
 		if data.MaxSteps != nil {
 			reqBody["max_steps"] = *data.MaxSteps
+		}
+		if data.ImageModel != "" {
+			reqBody["image_model"] = data.ImageModel
 		}
 		// GPU metrics for idle detection
 		if data.GPUUtilization != nil {

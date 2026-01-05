@@ -14,7 +14,8 @@ const (
 // Job represents an image, video, or face-swap generation job from the backend
 type Job struct {
 	ID             string  `json:"id"`
-	Type           JobType `json:"type"` // "image", "video", or "face_swap"
+	Type           JobType `json:"type"`  // "image", "video", or "face_swap"
+	Model          string  `json:"model"` // "z-image-turbo", "flux-schnell", etc.
 	Status         string  `json:"status"`
 	Prompt         string  `json:"prompt"`
 	NegativePrompt *string `json:"negative_prompt,omitempty"`
