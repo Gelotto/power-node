@@ -90,6 +90,9 @@ func TestBuildHeartbeatData_WithCapabilities(t *testing.T) {
 			MaxSteps:      32,
 		},
 		config: &Config{
+			Model: ModelConfig{
+				Name: "z-image-turbo",
+			},
 			Video: VideoConfig{
 				MaxDuration: 10,
 				MaxFPS:      30,
@@ -107,6 +110,11 @@ func TestBuildHeartbeatData_WithCapabilities(t *testing.T) {
 	}
 
 	data := worker.buildHeartbeatData()
+
+	// Model info
+	if data.ImageModel != "z-image-turbo" {
+		t.Errorf("ImageModel = %q, want %q", data.ImageModel, "z-image-turbo")
+	}
 
 	if data.VRAM == nil || *data.VRAM != 24 {
 		t.Errorf("VRAM = %v, want 24", data.VRAM)

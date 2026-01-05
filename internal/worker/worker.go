@@ -620,9 +620,13 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 // buildHeartbeatData creates heartbeat data with capability information
 func (w *Worker) buildHeartbeatData() *client.HeartbeatData {
 	data := &client.HeartbeatData{
-		Hostname:   w.hostname,
-		GPUInfo:    w.gpuInfo,
-		ImageModel: w.config.Model.Name, // z-image-turbo or flux-schnell
+		Hostname: w.hostname,
+		GPUInfo:  w.gpuInfo,
+	}
+
+	// Add model name if config is available
+	if w.config != nil {
+		data.ImageModel = w.config.Model.Name // z-image-turbo or flux-schnell
 	}
 
 	if w.capabilities != nil {
