@@ -40,6 +40,10 @@ type Worker struct {
 	supportsVideo bool
 	// Face-swap capability
 	supportsFaceSwap bool
+	// Multi-model support
+	supportedModels []string     // All models this worker has installed
+	activeModel     *string      // Currently loaded model (nil = none)
+	activeModelMu   sync.RWMutex // Protects activeModel
 }
 
 // NewWorker creates a new worker
@@ -89,6 +93,14 @@ func (w *Worker) Start(ctx context.Context) error {
 	// Detect face-swap capability
 	w.detectFaceSwapCapability()
 
+	// Initialize multi-model support
+	w.supportedModels = w.config.GetSupportedModelNames()
+	if len(w.supportedModels) == 0 {
+		// Fallback to legacy single model
+		w.supportedModels = []string{w.config.Model.Name}
+	}
+	log.Printf("Supported models: %v", w.supportedModels)
+
 	// Validate configuration before starting
 	if err := w.config.Validate(); err != nil {
 		return fmt.Errorf("%v\n\n  Please add your credentials to:\n  %s\n\n  Get your credentials at: https://gelotto.io/workers", err, w.configPath)
@@ -127,6 +139,15 @@ func (w *Worker) Start(ctx context.Context) error {
 	log.Println("Waiting for Python service to initialize...")
 	time.Sleep(10 * time.Second)
 	w.pythonRunning = true
+
+	// Set initial active model (first model loaded at startup)
+	if len(w.supportedModels) > 0 {
+		initialModel := w.config.GetDefaultModelName()
+		w.activeModelMu.Lock()
+		w.activeModel = &initialModel
+		w.activeModelMu.Unlock()
+		log.Printf("Active model: %s", initialModel)
+	}
 
 	log.Println("Worker fully initialized!")
 
@@ -279,6 +300,11 @@ func (w *Worker) stopPythonForPause() {
 
 // restartPython restarts the Python inference service and waits for model to load
 func (w *Worker) restartPython() error {
+	return w.restartPythonWithModel("")
+}
+
+// restartPythonWithModel restarts Python with a specific model, or default if empty
+func (w *Worker) restartPythonWithModel(modelName string) error {
 	w.pythonMu.Lock()
 	defer w.pythonMu.Unlock()
 
@@ -289,9 +315,22 @@ func (w *Worker) restartPython() error {
 		w.pythonExec = nil
 	}
 
+	// Determine model path
+	var modelPath string
+	if modelName != "" {
+		modelDef := w.config.GetModelDefinition(modelName)
+		if modelDef != nil {
+			modelPath = modelDef.Path
+		}
+	}
+	if modelPath == "" {
+		// Fallback to legacy config
+		modelPath = w.config.Model.Path
+	}
+
 	scriptArgs := w.config.Python.ScriptArgs
-	if len(scriptArgs) == 0 && w.config.Model.Path != "" {
-		scriptArgs = []string{w.config.Model.Path}
+	if len(scriptArgs) == 0 && modelPath != "" {
+		scriptArgs = []string{modelPath}
 	}
 
 	w.pythonExec = executor.NewPythonExecutor(
@@ -315,7 +354,99 @@ func (w *Worker) restartPython() error {
 	time.Sleep(10 * time.Second)
 	w.pythonRunning = true
 
+	// Update active model
+	if modelName != "" {
+		w.activeModelMu.Lock()
+		w.activeModel = &modelName
+		w.activeModelMu.Unlock()
+	}
+
 	return nil
+}
+
+// loadModel ensures the specified model is loaded, swapping if necessary
+// Returns nil if model is already loaded or swap succeeded
+func (w *Worker) loadModel(ctx context.Context, modelName string) error {
+	// Check if model is already loaded
+	w.activeModelMu.RLock()
+	if w.activeModel != nil && *w.activeModel == modelName {
+		w.activeModelMu.RUnlock()
+		return nil // Already loaded, nothing to do
+	}
+	currentModel := ""
+	if w.activeModel != nil {
+		currentModel = *w.activeModel
+	}
+	w.activeModelMu.RUnlock()
+
+	// Check if we support this model
+	// If supportedModels is empty (legacy/test mode), allow any model
+	if len(w.supportedModels) > 0 {
+		supported := false
+		for _, m := range w.supportedModels {
+			if m == modelName {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			return fmt.Errorf("model %s not supported by this worker", modelName)
+		}
+	}
+
+	// Special case: if no activeModel is set but Python is already running,
+	// assume the correct model is loaded (legacy/test mode compatibility)
+	w.pythonMu.Lock()
+	pythonIsRunning := w.pythonExec != nil && w.pythonRunning
+	w.pythonMu.Unlock()
+
+	if currentModel == "" && pythonIsRunning {
+		// Python is running but no active model tracked - set it now
+		w.activeModelMu.Lock()
+		w.activeModel = &modelName
+		w.activeModelMu.Unlock()
+		return nil
+	}
+
+	// Need to swap models - this involves restarting Python
+	if currentModel != "" {
+		log.Printf("Swapping model: %s -> %s (this may take 5-10 seconds)...", currentModel, modelName)
+	} else {
+		log.Printf("Loading model: %s...", modelName)
+	}
+
+	// Stop current Python (releases VRAM)
+	w.pythonMu.Lock()
+	if w.pythonExec != nil {
+		log.Println("Unloading current model...")
+		w.pythonExec.Stop()
+		w.pythonExec = nil
+		w.pythonRunning = false
+	}
+	w.pythonMu.Unlock()
+
+	// Clear active model during transition
+	w.activeModelMu.Lock()
+	w.activeModel = nil
+	w.activeModelMu.Unlock()
+
+	// Restart with new model
+	if err := w.restartPythonWithModel(modelName); err != nil {
+		return fmt.Errorf("failed to load model %s: %w", modelName, err)
+	}
+
+	log.Printf("Model %s loaded successfully", modelName)
+	return nil
+}
+
+// getActiveModel returns the currently loaded model name (thread-safe)
+func (w *Worker) getActiveModel() string {
+	w.activeModelMu.RLock()
+	defer w.activeModelMu.RUnlock()
+	if w.activeModel != nil {
+		return *w.activeModel
+	}
+	return ""
 }
 
 // processJob processes a single job (routes to image, video, or face-swap processing)
@@ -356,12 +487,21 @@ func (w *Worker) processImageJob(ctx context.Context, job *models.Job) {
 	log.Printf("Processing image job %s...", job.ID)
 	startTime := time.Now()
 
-	// Validate model compatibility - prevent processing wrong model's jobs
-	if job.Model != "" && job.Model != w.config.Model.Name {
-		errMsg := fmt.Sprintf("model mismatch: job requires %s, worker has %s", job.Model, w.config.Model.Name)
+	// Determine required model (default to z-image-turbo for backwards compatibility)
+	requiredModel := job.Model
+	if requiredModel == "" {
+		requiredModel = w.config.GetDefaultModelName()
+		if requiredModel == "" {
+			requiredModel = "z-image-turbo"
+		}
+	}
+
+	// Multi-model support: load the required model if not already active
+	if err := w.loadModel(ctx, requiredModel); err != nil {
+		errMsg := fmt.Sprintf("failed to load model %s: %v", requiredModel, err)
 		log.Printf("Rejecting job %s: %s", job.ID, errMsg)
 		if err := w.apiClient.FailJob(ctx, w.id, job.ID, errMsg); err != nil {
-			log.Printf("Failed to report model mismatch for job %s: %v", job.ID, err)
+			log.Printf("Failed to report model load failure for job %s: %v", job.ID, err)
 		}
 		return
 	}
@@ -406,15 +546,8 @@ func (w *Worker) processVideoJob(ctx context.Context, job *models.Job) {
 	log.Printf("Processing video job %s...", job.ID)
 	startTime := time.Now()
 
-	// Validate model compatibility - prevent processing wrong model's jobs
-	if job.Model != "" && job.Model != w.config.Model.Name {
-		errMsg := fmt.Sprintf("model mismatch: job requires %s, worker has %s", job.Model, w.config.Model.Name)
-		log.Printf("Rejecting video job %s: %s", job.ID, errMsg)
-		if err := w.apiClient.FailJob(ctx, w.id, job.ID, errMsg); err != nil {
-			log.Printf("Failed to report model mismatch for job %s: %v", job.ID, err)
-		}
-		return
-	}
+	// Note: Video generation uses Wan2.1 model, which is separate from image models
+	// No image model check needed here - video capability is checked in processJob()
 
 	if err := w.apiClient.StartProcessing(ctx, w.id, job.ID); err != nil {
 		log.Printf("Failed to notify processing start for job %s: %v", job.ID, err)
@@ -514,15 +647,8 @@ func (w *Worker) processFaceSwapJob(ctx context.Context, job *models.Job) {
 	log.Printf("Processing face-swap job %s...", job.ID)
 	startTime := time.Now()
 
-	// Validate model compatibility - prevent processing wrong model's jobs
-	if job.Model != "" && job.Model != w.config.Model.Name {
-		errMsg := fmt.Sprintf("model mismatch: job requires %s, worker has %s", job.Model, w.config.Model.Name)
-		log.Printf("Rejecting face-swap job %s: %s", job.ID, errMsg)
-		if err := w.apiClient.FailJob(ctx, w.id, job.ID, errMsg); err != nil {
-			log.Printf("Failed to report model mismatch for job %s: %v", job.ID, err)
-		}
-		return
-	}
+	// Note: Face-swap uses insightface model, which is separate from image models
+	// No image model check needed here - face-swap capability is checked in processJob()
 
 	if err := w.apiClient.StartProcessing(ctx, w.id, job.ID); err != nil {
 		log.Printf("Failed to notify processing start for job %s: %v", job.ID, err)
@@ -624,9 +750,22 @@ func (w *Worker) buildHeartbeatData() *client.HeartbeatData {
 		GPUInfo:  w.gpuInfo,
 	}
 
-	// Add model name if config is available
-	if w.config != nil {
-		data.ImageModel = w.config.Model.Name // z-image-turbo or flux-schnell
+	// Multi-model support: report all supported models and current active model
+	if len(w.supportedModels) > 0 {
+		data.SupportedModels = w.supportedModels
+	}
+
+	w.activeModelMu.RLock()
+	if w.activeModel != nil {
+		data.ActiveModel = w.activeModel
+		// Also set legacy field for backwards compatibility
+		data.ImageModel = *w.activeModel
+	}
+	w.activeModelMu.RUnlock()
+
+	// Legacy single-model fallback
+	if data.ImageModel == "" && w.config != nil {
+		data.ImageModel = w.config.Model.Name
 	}
 
 	if w.capabilities != nil {

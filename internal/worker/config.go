@@ -12,7 +12,8 @@ import (
 // Config holds worker configuration
 type Config struct {
 	API      APIConfig      `yaml:"api"`
-	Model    ModelConfig    `yaml:"model"`
+	Models   ModelsConfig   `yaml:"models"`   // NEW: Multi-model support
+	Model    ModelConfig    `yaml:"model"`    // LEGACY: Kept for backwards compatibility
 	Video    VideoConfig    `yaml:"video"`
 	FaceSwap FaceSwapConfig `yaml:"faceswap"`
 	Worker   WorkerConfig   `yaml:"worker"`
@@ -25,12 +26,27 @@ type APIConfig struct {
 	Key string `yaml:"key"`
 }
 
-// ModelConfig holds model settings
+// ModelConfig holds model settings (LEGACY - kept for backwards compatibility)
 type ModelConfig struct {
 	Path        string `yaml:"path"`
 	Name        string `yaml:"name"`
 	ServiceMode string `yaml:"service_mode"`
 	VRAMGB      int    `yaml:"vram_gb"`
+}
+
+// ModelDefinition defines a single image generation model for multi-model support
+type ModelDefinition struct {
+	Name         string `yaml:"name"`          // e.g., "z-image-turbo", "flux-schnell"
+	Path         string `yaml:"path"`          // Path to model files
+	VRAMRequired int    `yaml:"vram_required"` // VRAM needed when loaded (GB)
+	Priority     int    `yaml:"priority"`      // Lower = higher priority for staying loaded (0 = highest)
+	Enabled      *bool  `yaml:"enabled"`       // nil = auto-detect based on VRAM, true/false = explicit
+}
+
+// ModelsConfig holds multi-model settings
+type ModelsConfig struct {
+	Models      []ModelDefinition `yaml:"models"`       // List of available models
+	IdleTimeout time.Duration     `yaml:"idle_timeout"` // How long a model stays loaded when idle (default: 5min)
 }
 
 // VideoConfig holds video generation settings
@@ -96,6 +112,23 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.API.URL == "" {
 		cfg.API.URL = "https://api.gelotto.io"
 	}
+
+	// Multi-model migration: if new format is empty but old format exists, migrate
+	if len(cfg.Models.Models) == 0 && cfg.Model.Name != "" {
+		cfg.Models.Models = []ModelDefinition{{
+			Name:         cfg.Model.Name,
+			Path:         cfg.Model.Path,
+			VRAMRequired: cfg.Model.VRAMGB,
+			Priority:     0,
+		}}
+	}
+
+	// Default idle timeout for multi-model
+	if cfg.Models.IdleTimeout == 0 {
+		cfg.Models.IdleTimeout = 5 * time.Minute
+	}
+
+	// Legacy single-model default (for backwards compatibility)
 	if cfg.Model.Name == "" {
 		cfg.Model.Name = "z-image-turbo"
 	}
@@ -203,4 +236,68 @@ func SaveConfig(path string, cfg *Config) error {
 	}
 
 	return nil
+}
+
+// GetSupportedModelNames returns a list of all supported model names
+func (c *Config) GetSupportedModelNames() []string {
+	names := make([]string, 0, len(c.Models.Models))
+	for _, m := range c.Models.Models {
+		// Skip explicitly disabled models
+		if m.Enabled != nil && !*m.Enabled {
+			continue
+		}
+		names = append(names, m.Name)
+	}
+	// Fallback to legacy single-model if no models configured
+	if len(names) == 0 && c.Model.Name != "" {
+		return []string{c.Model.Name}
+	}
+	return names
+}
+
+// GetModelDefinition returns the model definition for a given name, or nil if not found
+func (c *Config) GetModelDefinition(name string) *ModelDefinition {
+	for i := range c.Models.Models {
+		if c.Models.Models[i].Name == name {
+			return &c.Models.Models[i]
+		}
+	}
+	return nil
+}
+
+// HasModel checks if the worker supports a specific model
+func (c *Config) HasModel(name string) bool {
+	return c.GetModelDefinition(name) != nil
+}
+
+// GetDefaultModelName returns the highest-priority model name (lowest priority number)
+func (c *Config) GetDefaultModelName() string {
+	if len(c.Models.Models) == 0 {
+		return c.Model.Name // Legacy fallback
+	}
+
+	// Find lowest priority (highest precedence) model
+	best := &c.Models.Models[0]
+	for i := range c.Models.Models {
+		m := &c.Models.Models[i]
+		// Skip disabled models
+		if m.Enabled != nil && !*m.Enabled {
+			continue
+		}
+		if m.Priority < best.Priority {
+			best = m
+		}
+	}
+	return best.Name
+}
+
+// IsMultiModel returns true if multiple models are configured
+func (c *Config) IsMultiModel() bool {
+	enabled := 0
+	for _, m := range c.Models.Models {
+		if m.Enabled == nil || *m.Enabled {
+			enabled++
+		}
+	}
+	return enabled > 1
 }

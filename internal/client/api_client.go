@@ -50,7 +50,12 @@ type HeartbeatData struct {
 	ServiceMode   string
 	MaxResolution *int
 	MaxSteps      *int
-	// Image model (z-image-turbo, flux-schnell)
+
+	// Multi-model support (NEW)
+	SupportedModels []string // All models worker has installed (e.g., ["z-image-turbo", "flux-schnell"])
+	ActiveModel     *string  // Currently loaded model (nil = none loaded)
+
+	// Legacy single-model (kept for backwards compatibility)
 	ImageModel string
 	// GPU metrics for idle detection
 	GPUUtilization *int // Current GPU utilization (0-100)
@@ -101,6 +106,13 @@ func (c *APIClient) Heartbeat(ctx context.Context, workerID, status string, data
 		}
 		if data.ImageModel != "" {
 			reqBody["image_model"] = data.ImageModel
+		}
+		// Multi-model support
+		if len(data.SupportedModels) > 0 {
+			reqBody["supported_models"] = data.SupportedModels
+		}
+		if data.ActiveModel != nil {
+			reqBody["active_model"] = *data.ActiveModel
 		}
 		// GPU metrics for idle detection
 		if data.GPUUtilization != nil {

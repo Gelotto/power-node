@@ -123,3 +123,88 @@ func (c *GPUCapabilities) String() string {
 		c.GPUModel, c.VRAM, c.ComputeCap, c.ServiceMode,
 		c.CapabilityTier, c.MaxResolution, c.MaxResolution, c.MaxSteps)
 }
+
+// SupportableModel describes a model that can run on this GPU
+type SupportableModel struct {
+	Name         string `json:"name"`
+	CanRunGGUF   bool   `json:"can_run_gguf"`
+	CanRunPyTorch bool  `json:"can_run_pytorch"`
+	MinVRAM      int    `json:"min_vram"` // Minimum VRAM required
+}
+
+// DetermineSupportableModels returns which image models this GPU can run
+// based on VRAM and compute capability
+func DetermineSupportableModels(vramGB int, computeCap string) []SupportableModel {
+	models := []SupportableModel{}
+	isBlackwell := isBlackwellGPU(computeCap)
+
+	// Z-Image-Turbo requirements:
+	// - GGUF mode: 8GB+ (for non-Blackwell GPUs)
+	// - PyTorch mode: 14GB+ (for any GPU)
+	zimage := SupportableModel{
+		Name:    "z-image-turbo",
+		MinVRAM: 8,
+	}
+	if !isBlackwell && vramGB >= 8 {
+		zimage.CanRunGGUF = true
+	}
+	if vramGB >= 14 {
+		zimage.CanRunPyTorch = true
+	}
+	if zimage.CanRunGGUF || zimage.CanRunPyTorch {
+		models = append(models, zimage)
+	}
+
+	// FLUX.1-schnell requirements:
+	// - GGUF mode: 12GB+ (for non-Blackwell GPUs, Q8_0 quantization)
+	// - PyTorch mode: 16GB+ (for any GPU)
+	flux := SupportableModel{
+		Name:    "flux-schnell",
+		MinVRAM: 12,
+	}
+	if !isBlackwell && vramGB >= 12 {
+		flux.CanRunGGUF = true
+	}
+	if vramGB >= 16 {
+		flux.CanRunPyTorch = true
+	}
+	if flux.CanRunGGUF || flux.CanRunPyTorch {
+		models = append(models, flux)
+	}
+
+	return models
+}
+
+// isBlackwellGPU checks if the GPU is a Blackwell architecture (compute cap 12.0+)
+func isBlackwellGPU(computeCap string) bool {
+	parts := strings.Split(computeCap, ".")
+	if len(parts) < 1 {
+		return false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false
+	}
+	return major >= 12
+}
+
+// GetSupportableModelNames returns just the names of supportable models
+func GetSupportableModelNames(vramGB int, computeCap string) []string {
+	models := DetermineSupportableModels(vramGB, computeCap)
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		names = append(names, m.Name)
+	}
+	return names
+}
+
+// CanRunModel checks if a specific model can run on this GPU
+func CanRunModel(vramGB int, computeCap, modelName string) bool {
+	models := DetermineSupportableModels(vramGB, computeCap)
+	for _, m := range models {
+		if m.Name == modelName {
+			return true
+		}
+	}
+	return false
+}
