@@ -8,28 +8,23 @@ set -e
 # Parse command line arguments
 SKIP_VIDEO=false
 SKIP_FACESWAP=false
-IMAGE_MODEL=""  # Will be set interactively or via --model flag
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --no-video) SKIP_VIDEO=true ;;
         --no-faceswap) SKIP_FACESWAP=true ;;
         --minimal) SKIP_VIDEO=true; SKIP_FACESWAP=true ;;
-        --model)
-            IMAGE_MODEL="$2"
-            shift
-            ;;
         --help|-h)
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --model MODEL   Override auto-detection: z-image-turbo, flux-schnell, or both"
-            echo "                  Default: Auto-detect based on VRAM"
-            echo "                    - 12GB+ VRAM: Both models (multi-model mode)"
-            echo "                    - 8-11GB VRAM: Z-Image-Turbo only"
             echo "  --no-video      Skip video model (auto-downloaded for 12GB+ VRAM PyTorch GPUs)"
             echo "  --no-faceswap   Skip face-swap model (auto-downloaded for 6GB+ VRAM)"
             echo "  --minimal       Skip all optional models (video + face-swap)"
             echo "  --help, -h      Show this help message"
+            echo ""
+            echo "Model selection is fully automatic based on VRAM:"
+            echo "  - 12GB+ VRAM: Both z-image-turbo + flux-schnell (multi-model mode)"
+            echo "  - 8-11GB VRAM: z-image-turbo only"
             exit 0
             ;;
     esac
@@ -179,7 +174,7 @@ fi
 echo -e "${GREEN}  ✓ GPU validated${NC}"
 
 # =============================================================================
-# Model Selection - Auto-detect based on VRAM
+# Model Selection - Fully automatic based on VRAM
 # =============================================================================
 echo -e "${YELLOW}[3.5/7] Auto-detecting supported models based on VRAM...${NC}"
 
@@ -188,61 +183,20 @@ INSTALL_BOTH_MODELS=false
 INSTALL_ZIMAGE=false
 INSTALL_FLUX=false
 
-# Auto-detect supported models based on VRAM (unless --model flag specified)
-if [ -z "$IMAGE_MODEL" ]; then
-    # Auto-detection mode (default)
-    if [ $VRAM_GB -ge 12 ]; then
-        echo -e "  ${GREEN}12GB+ VRAM detected - enabling both models (multi-model mode)${NC}"
-        IMAGE_MODEL="z-image-turbo"  # Primary model (loaded first)
-        INSTALL_BOTH_MODELS=true
-        INSTALL_ZIMAGE=true
-        INSTALL_FLUX=true
-    elif [ $VRAM_GB -ge 8 ]; then
-        echo -e "  ${YELLOW}8-11GB VRAM detected - enabling Z-Image-Turbo only${NC}"
-        IMAGE_MODEL="z-image-turbo"
-        INSTALL_ZIMAGE=true
-    else
-        echo -e "${RED}ERROR: Minimum 8GB VRAM required. Your GPU has ${VRAM_GB}GB.${NC}"
-        exit 1
-    fi
+# Auto-detect supported models based on VRAM
+if [ $VRAM_GB -ge 12 ]; then
+    echo -e "  ${GREEN}12GB+ VRAM detected - enabling both models (multi-model mode)${NC}"
+    IMAGE_MODEL="z-image-turbo"  # Primary model (loaded first)
+    INSTALL_BOTH_MODELS=true
+    INSTALL_ZIMAGE=true
+    INSTALL_FLUX=true
+elif [ $VRAM_GB -ge 8 ]; then
+    echo -e "  ${YELLOW}8-11GB VRAM detected - enabling Z-Image-Turbo only${NC}"
+    IMAGE_MODEL="z-image-turbo"
+    INSTALL_ZIMAGE=true
 else
-    # Model specified via --model flag (override auto-detection)
-    echo -e "  Using model specified via --model flag: ${IMAGE_MODEL}"
-    case "$IMAGE_MODEL" in
-        both)
-            if [ $VRAM_GB -ge 12 ]; then
-                IMAGE_MODEL="z-image-turbo"
-                INSTALL_BOTH_MODELS=true
-                INSTALL_ZIMAGE=true
-                INSTALL_FLUX=true
-            else
-                echo -e "${YELLOW}  Both models require 12GB+ VRAM. Using Z-Image-Turbo only.${NC}"
-                IMAGE_MODEL="z-image-turbo"
-                INSTALL_ZIMAGE=true
-            fi
-            ;;
-        flux-schnell)
-            if [ $VRAM_GB -lt 12 ]; then
-                echo -e "${RED}ERROR: FLUX.1-schnell requires at least 12GB VRAM. Your GPU has ${VRAM_GB}GB.${NC}"
-                exit 1
-            fi
-            INSTALL_FLUX=true
-            ;;
-        z-image-turbo)
-            INSTALL_ZIMAGE=true
-            ;;
-        *)
-            echo -e "${RED}ERROR: Invalid model '$IMAGE_MODEL'. Use 'z-image-turbo', 'flux-schnell', or 'both'.${NC}"
-            exit 1
-            ;;
-    esac
-fi
-
-# Video/face-swap only available with Z-Image
-if [ "$INSTALL_FLUX" = true ] && [ "$INSTALL_ZIMAGE" = false ]; then
-    SKIP_VIDEO=true
-    SKIP_FACESWAP=true
-    echo -e "${YELLOW}  Note: Video and face-swap are not available with FLUX-only mode.${NC}"
+    echo -e "${RED}ERROR: Minimum 8GB VRAM required. Your GPU has ${VRAM_GB}GB.${NC}"
+    exit 1
 fi
 
 if [ "$INSTALL_BOTH_MODELS" = true ]; then
@@ -597,10 +551,41 @@ check_disk_space_warning() {
 }
 
 if [ "$SERVICE_MODE" = "gguf" ]; then
-    if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
-        # =============================================================================
-        # FLUX.1-schnell GGUF Mode Downloads
-        # =============================================================================
+    # =============================================================================
+    # GGUF Mode Downloads
+    # =============================================================================
+
+    # Download Z-Image-Turbo if enabled
+    if [ "$INSTALL_ZIMAGE" = true ]; then
+        echo "  Downloading Z-Image-Turbo (GGUF mode)..."
+        if [ $VRAM_GB -lt 10 ]; then
+            QUANT="Q4_0"
+        else
+            QUANT="Q8_0"
+        fi
+
+        download_file \
+            "$HF_BASE/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-${QUANT}.gguf" \
+            "$INSTALL_DIR/models/diffusion/z_image_turbo-${QUANT}.gguf" \
+            "Z-Image diffusion model (${QUANT})"
+
+        download_file \
+            "$HF_BASE/ffxvs/vae-flux/resolve/main/ae.safetensors" \
+            "$INSTALL_DIR/models/vae/ae.safetensors" \
+            "VAE"
+
+        download_file \
+            "$HF_BASE/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" \
+            "$INSTALL_DIR/models/text_encoder/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" \
+            "Text encoder"
+
+        DIFFUSION_PATH="$INSTALL_DIR/models/diffusion/z_image_turbo-${QUANT}.gguf"
+        VAE_PATH="$INSTALL_DIR/models/vae/ae.safetensors"
+        TEXT_ENCODER_PATH="$INSTALL_DIR/models/text_encoder/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    fi
+
+    # Download FLUX.1-schnell if enabled
+    if [ "$INSTALL_FLUX" = true ]; then
         echo "  Downloading FLUX.1-schnell (GGUF mode)..."
 
         # Determine quantization based on VRAM
@@ -638,82 +623,20 @@ if [ "$SERVICE_MODE" = "gguf" ]; then
         download_file \
             "$HF_BASE/ffxvs/vae-flux/resolve/main/ae.safetensors" \
             "$INSTALL_DIR/models/flux-schnell/vae/ae.safetensors" \
-            "VAE"
+            "FLUX VAE"
 
         FLUX_DIFFUSION_PATH="$INSTALL_DIR/models/flux-schnell/diffusion/flux1-schnell-${FLUX_QUANT}.gguf"
         FLUX_CLIP_PATH="$INSTALL_DIR/models/flux-schnell/text_encoder/clip_l.safetensors"
         FLUX_T5_PATH="$INSTALL_DIR/models/flux-schnell/text_encoder/t5xxl_fp16.safetensors"
         FLUX_VAE_PATH="$INSTALL_DIR/models/flux-schnell/vae/ae.safetensors"
-
-    else
-        # =============================================================================
-        # Z-Image-Turbo GGUF Mode Downloads
-        # =============================================================================
-        if [ $VRAM_GB -lt 10 ]; then
-            QUANT="Q4_0"
-        else
-            QUANT="Q8_0"
-        fi
-
-        download_file \
-            "$HF_BASE/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-${QUANT}.gguf" \
-            "$INSTALL_DIR/models/diffusion/z_image_turbo-${QUANT}.gguf" \
-            "Diffusion model (${QUANT})"
-
-        download_file \
-            "$HF_BASE/ffxvs/vae-flux/resolve/main/ae.safetensors" \
-            "$INSTALL_DIR/models/vae/ae.safetensors" \
-            "VAE"
-
-        download_file \
-            "$HF_BASE/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" \
-            "$INSTALL_DIR/models/text_encoder/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" \
-            "Text encoder"
-
-        DIFFUSION_PATH="$INSTALL_DIR/models/diffusion/z_image_turbo-${QUANT}.gguf"
-        VAE_PATH="$INSTALL_DIR/models/vae/ae.safetensors"
-        TEXT_ENCODER_PATH="$INSTALL_DIR/models/text_encoder/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
     fi
 else
-    # PyTorch mode - download full model via huggingface-cli
-    if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
-        # =============================================================================
-        # FLUX.1-schnell PyTorch Mode Downloads
-        # =============================================================================
-        echo "  Downloading FLUX.1-schnell model (PyTorch, ~24GB)..."
-        echo "  This may take a while on slower connections..."
+    # =============================================================================
+    # PyTorch Mode Downloads
+    # =============================================================================
 
-        FLUX_MODEL_DIR="$INSTALL_DIR/models/flux-schnell"
-        if [ -d "$FLUX_MODEL_DIR" ] && [ -f "$FLUX_MODEL_DIR/model_index.json" ]; then
-            echo -e "  ${GREEN}✓${NC} FLUX.1-schnell (cached)"
-        else
-            source "$INSTALL_DIR/venv/bin/activate"
-            if ! pip install huggingface_hub --quiet; then
-                echo -e "${RED}ERROR: Failed to install huggingface_hub${NC}"
-                exit 1
-            fi
-            python3 -c "
-from huggingface_hub import snapshot_download
-snapshot_download(
-    'black-forest-labs/FLUX.1-schnell',
-    local_dir='$FLUX_MODEL_DIR',
-    local_dir_use_symlinks=False,
-    ignore_patterns=['*.md', '*.txt', '.gitattributes']
-)
-"
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}ERROR: Failed to download FLUX.1-schnell model${NC}"
-                exit 1
-            fi
-            deactivate
-        fi
-
-        # FLUX PyTorch uses built-in VAE, no separate download needed
-        echo -e "  ${GREEN}✓${NC} FLUX model ready"
-    else
-        # =============================================================================
-        # Z-Image-Turbo PyTorch Mode Downloads
-        # =============================================================================
+    # Download Z-Image-Turbo if enabled
+    if [ "$INSTALL_ZIMAGE" = true ]; then
         echo "  Downloading Z-Image-Turbo model (PyTorch, ~31GB)..."
         echo "  This may take a while on slower connections..."
 
@@ -746,6 +669,40 @@ snapshot_download(
             "$HF_BASE/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors" \
             "$INSTALL_DIR/models/vae/ae.safetensors" \
             "VAE"
+    fi
+
+    # Download FLUX.1-schnell if enabled
+    if [ "$INSTALL_FLUX" = true ]; then
+        echo "  Downloading FLUX.1-schnell model (PyTorch, ~24GB)..."
+        echo "  This may take a while on slower connections..."
+
+        FLUX_MODEL_DIR="$INSTALL_DIR/models/flux-schnell"
+        if [ -d "$FLUX_MODEL_DIR" ] && [ -f "$FLUX_MODEL_DIR/model_index.json" ]; then
+            echo -e "  ${GREEN}✓${NC} FLUX.1-schnell (cached)"
+        else
+            source "$INSTALL_DIR/venv/bin/activate"
+            if ! pip install huggingface_hub --quiet; then
+                echo -e "${RED}ERROR: Failed to install huggingface_hub${NC}"
+                exit 1
+            fi
+            python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download(
+    'black-forest-labs/FLUX.1-schnell',
+    local_dir='$FLUX_MODEL_DIR',
+    local_dir_use_symlinks=False,
+    ignore_patterns=['*.md', '*.txt', '.gitattributes']
+)
+"
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}ERROR: Failed to download FLUX.1-schnell model${NC}"
+                exit 1
+            fi
+            deactivate
+        fi
+
+        # FLUX PyTorch uses built-in VAE, no separate download needed
+        echo -e "  ${GREEN}✓${NC} FLUX model ready"
     fi
 
     # =============================================================================
