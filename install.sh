@@ -25,6 +25,10 @@ while [[ "$#" -gt 0 ]]; do
             echo "Model selection is fully automatic based on VRAM:"
             echo "  - 12GB+ VRAM: Both z-image-turbo + flux-schnell (multi-model mode)"
             echo "  - 8-11GB VRAM: z-image-turbo only"
+            echo ""
+            echo "Environment variables:"
+            echo "  HF_TOKEN        HuggingFace token for FLUX model (required for PyTorch mode)"
+            echo "                  Get one at: https://huggingface.co/settings/tokens"
             exit 0
             ;;
     esac
@@ -680,29 +684,56 @@ snapshot_download(
         if [ -d "$FLUX_MODEL_DIR" ] && [ -f "$FLUX_MODEL_DIR/model_index.json" ]; then
             echo -e "  ${GREEN}✓${NC} FLUX.1-schnell (cached)"
         else
-            source "$INSTALL_DIR/venv/bin/activate"
-            if ! pip install huggingface_hub --quiet; then
-                echo -e "${RED}ERROR: Failed to install huggingface_hub${NC}"
-                exit 1
-            fi
-            python3 -c "
+            # FLUX.1-schnell is a gated model - check for HuggingFace token
+            if [ -z "$HF_TOKEN" ]; then
+                echo ""
+                echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "${YELLOW}  FLUX.1-schnell requires HuggingFace authentication${NC}"
+                echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo ""
+                echo "  FLUX.1-schnell is a gated model. To download it:"
+                echo ""
+                echo "  1. Create a HuggingFace account: https://huggingface.co/join"
+                echo "  2. Accept the license: https://huggingface.co/black-forest-labs/FLUX.1-schnell"
+                echo "  3. Create an access token: https://huggingface.co/settings/tokens"
+                echo "  4. Re-run the installer with your token:"
+                echo ""
+                echo -e "     ${CYAN}HF_TOKEN=hf_xxxxx curl -sSL https://raw.githubusercontent.com/Gelotto/power-node/main/install.sh | bash${NC}"
+                echo ""
+                echo "  Or set it in your environment:"
+                echo -e "     ${CYAN}export HF_TOKEN=hf_xxxxx${NC}"
+                echo ""
+                echo -e "${YELLOW}  Skipping FLUX for now. Z-Image-Turbo will be installed.${NC}"
+                echo ""
+                INSTALL_FLUX=false
+            else
+                # Token exists, proceed with download
+                source "$INSTALL_DIR/venv/bin/activate"
+                if ! pip install huggingface_hub --quiet; then
+                    echo -e "${RED}ERROR: Failed to install huggingface_hub${NC}"
+                    exit 1
+                fi
+                HF_TOKEN="$HF_TOKEN" python3 -c "
+import os
 from huggingface_hub import snapshot_download
 snapshot_download(
     'black-forest-labs/FLUX.1-schnell',
     local_dir='$FLUX_MODEL_DIR',
     local_dir_use_symlinks=False,
-    ignore_patterns=['*.md', '*.txt', '.gitattributes']
+    ignore_patterns=['*.md', '*.txt', '.gitattributes'],
+    token=os.environ.get('HF_TOKEN')
 )
 "
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}ERROR: Failed to download FLUX.1-schnell model${NC}"
-                exit 1
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}ERROR: Failed to download FLUX.1-schnell model${NC}"
+                    echo "  Check that your HF_TOKEN is valid and you've accepted the license."
+                    INSTALL_FLUX=false
+                else
+                    echo -e "  ${GREEN}✓${NC} FLUX model ready"
+                fi
+                deactivate
             fi
-            deactivate
         fi
-
-        # FLUX PyTorch uses built-in VAE, no separate download needed
-        echo -e "  ${GREEN}✓${NC} FLUX model ready"
     fi
 
     # =============================================================================
@@ -2144,8 +2175,18 @@ VIDEOEOF
     fi
 fi
 
-# Add multi-model config section if both models installed
-if [ "$INSTALL_BOTH_MODELS" = true ]; then
+# Add multi-model config section if both models actually installed
+# Check for FLUX directory existence (might not exist if no HF_TOKEN was provided)
+FLUX_ACTUALLY_INSTALLED=false
+if [ -d "$INSTALL_DIR/models/flux-schnell" ] && [ -f "$INSTALL_DIR/models/flux-schnell/model_index.json" ]; then
+    # PyTorch mode - check for model_index.json
+    FLUX_ACTUALLY_INSTALLED=true
+elif [ -d "$INSTALL_DIR/models/flux-schnell/diffusion" ] && ls "$INSTALL_DIR/models/flux-schnell/diffusion/"*.gguf 1>/dev/null 2>&1; then
+    # GGUF mode - check for .gguf files
+    FLUX_ACTUALLY_INSTALLED=true
+fi
+
+if [ "$INSTALL_BOTH_MODELS" = true ] && [ "$FLUX_ACTUALLY_INSTALLED" = true ]; then
     echo "" >> "$INSTALL_DIR/config/config.yaml"
     if [ "$SERVICE_MODE" = "gguf" ]; then
         cat >> "$INSTALL_DIR/config/config.yaml" << MODELSEOF
@@ -2178,6 +2219,8 @@ models:
 MODELSEOF
     fi
     echo -e "${GREEN}  ✓ Multi-model config added${NC}"
+elif [ "$FLUX_ACTUALLY_INSTALLED" = false ] && [ "$INSTALL_FLUX" = true ]; then
+    echo -e "${YELLOW}  Note: FLUX was not installed (missing HF_TOKEN). Using single-model config.${NC}"
 fi
 
 # Add faceswap config if models were downloaded
