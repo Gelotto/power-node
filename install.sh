@@ -1175,7 +1175,8 @@ class InferenceService:
         sys.stderr.write("Ready.\n")
         sys.stderr.flush()
 
-    def generate(self, prompt, width=1024, height=1024, steps=8, seed=-1):
+    def generate(self, prompt, width=1024, height=1024, steps=8, seed=-1, negative_prompt=None):
+        # negative_prompt accepted but ignored (Z-Image-Turbo is a distilled model)
         sys.stderr.write(f"Generating: {prompt[:50]}...\n")
         sys.stderr.flush()
 
@@ -1186,7 +1187,7 @@ class InferenceService:
         # (Note: HuggingFace diffusers uses guidance_scale=0.0, but sd.cpp is different!)
         images = self.sd.generate_image(
             prompt=prompt,
-            negative_prompt="",  # Z-Image-Turbo doesn't use negative prompts
+            negative_prompt="",  # Z-Image-Turbo doesn't use negative prompts (ignored)
             width=width,
             height=height,
             cfg_scale=1.0,       # stable-diffusion.cpp uses 1.0 for Z-Image-Turbo
@@ -1331,9 +1332,13 @@ if __name__ == "__main__":
 INFERENCE_EOF
     fi
 else
-    if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
-        # FLUX PyTorch inference script
-        cat > "$INSTALL_DIR/scripts/inference.py" << 'FLUX_PYTORCH_EOF'
+    # PyTorch mode
+    if [ "$INSTALL_BOTH_MODELS" = true ]; then
+        # Multi-model mode: generate BOTH scripts
+        echo -e "${CYAN}  Generating multi-model inference scripts...${NC}"
+
+        # Generate FLUX PyTorch script
+        cat > "$INSTALL_DIR/scripts/inference_flux.py" << 'FLUX_PYTORCH_EOF'
 #!/usr/bin/env python3
 """
 Power Node Inference Service (FLUX PyTorch)
@@ -1505,9 +1510,10 @@ def main():
 if __name__ == "__main__":
     main()
 FLUX_PYTORCH_EOF
-    else
-        # Z-Image PyTorch inference script
-        cat > "$INSTALL_DIR/scripts/inference.py" << 'INFERENCE_EOF'
+        chmod +x "$INSTALL_DIR/scripts/inference_flux.py"
+
+        # Generate Z-Image PyTorch script (with face-swap and video support)
+        cat > "$INSTALL_DIR/scripts/inference_zimage.py" << 'ZIMAGE_PYTORCH_EOF'
 #!/usr/bin/env python3
 """
 Power Node Inference Service (PyTorch/Z-Image-Turbo)
@@ -1589,7 +1595,8 @@ class InferenceService:
         sys.stderr.write("Ready.\n")
         sys.stderr.flush()
 
-    def generate(self, prompt, width=1024, height=1024, steps=8, seed=-1):
+    def generate(self, prompt, width=1024, height=1024, steps=8, seed=-1, negative_prompt=None):
+        # negative_prompt accepted but ignored (Z-Image-Turbo is a distilled model)
         import torch
 
         # Reload Z-Image model if it was unloaded for video generation
@@ -1610,7 +1617,7 @@ class InferenceService:
         # guidance_scale MUST be 0.0, negative prompts are not supported
         image = self.pipe(
             prompt=prompt,
-            # DO NOT use negative_prompt - Z-Image-Turbo ignores it
+            # negative_prompt ignored - Z-Image-Turbo doesn't use it
             width=width,
             height=height,
             num_inference_steps=steps,
@@ -1916,11 +1923,355 @@ def main():
 
 if __name__ == "__main__":
     main()
-INFERENCE_EOF
+ZIMAGE_PYTORCH_EOF
+        chmod +x "$INSTALL_DIR/scripts/inference_zimage.py"
+
+        # Create default symlink to Z-Image (primary model)
+        ln -sf "$INSTALL_DIR/scripts/inference_zimage.py" "$INSTALL_DIR/scripts/inference.py"
+        echo -e "  ${GREEN}✓${NC} Multi-model scripts created (inference_zimage.py, inference_flux.py)"
+        echo -e "  ${CYAN}  Default: inference.py -> inference_zimage.py${NC}"
+
+    elif [ "$IMAGE_MODEL" = "flux-schnell" ]; then
+        # Single-model: FLUX PyTorch only
+        cat > "$INSTALL_DIR/scripts/inference.py" << 'FLUX_PYTORCH_SINGLE_EOF'
+#!/usr/bin/env python3
+"""
+Power Node Inference Service (FLUX PyTorch - Single Model)
+FLUX.1-schnell for Blackwell GPUs (RTX 50-series) with 16GB+ VRAM
+"""
+
+import sys
+import json
+import base64
+import io
+import os
+import argparse
+import gc
+
+def detect_vram_gb():
+    """Detect available VRAM in GB."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip().split('\n')[0]) // 1024
+    except:
+        pass
+    return 16  # Conservative default
+
+
+class FLUXInferenceService:
+    """FLUX.1-schnell inference via diffusers FluxPipeline"""
+
+    def __init__(self, model_path, vram_gb=None):
+        self.model_path = model_path
+        self.vram_gb = vram_gb or detect_vram_gb()
+        self.pipe = None
+
+    def initialize(self):
+        import torch
+        from diffusers import FluxPipeline
+
+        sys.stderr.write("=== Power Node FLUX Inference (PyTorch) ===\n")
+        sys.stderr.write(f"VRAM: {self.vram_gb}GB\n")
+        sys.stderr.flush()
+
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Model not found: {self.model_path}")
+
+        sys.stderr.write("Loading FLUX.1-schnell...\n")
+        sys.stderr.flush()
+
+        self.pipe = FluxPipeline.from_pretrained(
+            self.model_path,
+            torch_dtype=torch.bfloat16,
+        )
+
+        # Memory optimization based on VRAM
+        if self.vram_gb < 20:
+            sys.stderr.write("Enabling model CPU offload for memory optimization\n")
+            self.pipe.enable_model_cpu_offload()
+        else:
+            self.pipe = self.pipe.to("cuda")
+
+        sys.stderr.write("FLUX.1-schnell ready.\n")
+        sys.stderr.flush()
+
+    def generate(self, prompt, width, height, steps, seed=None, negative_prompt=None):
+        """Generate image with FLUX.1-schnell"""
+        # negative_prompt accepted but ignored (FLUX.1-schnell is distilled)
+        import torch
+
+        generator = None
+        if seed is not None:
+            generator = torch.Generator("cpu").manual_seed(seed)
+        else:
+            import random
+            seed = random.randint(0, 2**31 - 1)
+            generator = torch.Generator("cpu").manual_seed(seed)
+
+        # FLUX.1-schnell optimal: 1-4 steps
+        steps = min(steps, 4)
+
+        sys.stderr.write(f"Generating: {width}x{height}, {steps} steps, seed={seed}\n")
+        sys.stderr.flush()
+
+        # FLUX.1-schnell specific parameters
+        result = self.pipe(
+            prompt=prompt,
+            height=height,
+            width=width,
+            num_inference_steps=steps,
+            guidance_scale=0.0,  # CRITICAL: schnell is distilled, no CFG
+            max_sequence_length=256,
+            generator=generator,
+        )
+
+        buf = io.BytesIO()
+        result.images[0].save(buf, format='PNG')
+
+        # Clean up VRAM
+        gc.collect()
+        import torch
+        torch.cuda.empty_cache()
+
+        return {"image_data": base64.b64encode(buf.getvalue()).decode(), "format": "png"}
+
+    def handle_request(self, req):
+        method = req.get("method")
+        params = req.get("params", {})
+
+        if method == "generate":
+            img_data, fmt = self.generate(
+                prompt=params.get("prompt", ""),
+                width=params.get("width", 1024),
+                height=params.get("height", 1024),
+                steps=params.get("steps", 4),
+                seed=params.get("seed"),
+                negative_prompt=params.get("negative_prompt"),
+            )
+            return img_data
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+    def run(self):
+        sys.stderr.write("Waiting for requests...\n")
+        sys.stderr.flush()
+
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+
+            try:
+                req = json.loads(line)
+                req_id = req.get("id", 0)
+
+                result = self.handle_request(req)
+                response = {"id": req_id, "result": result, "error": None}
+            except Exception as e:
+                sys.stderr.write(f"Error: {e}\n")
+                sys.stderr.flush()
+                response = {"id": req.get("id"), "result": None, "error": str(e)}
+
+            # Clean up VRAM after each request
+            gc.collect()
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except:
+                pass
+
+            print(json.dumps(response), flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("model_path", help="Path to FLUX model directory")
+    args = parser.parse_args()
+
+    svc = FLUXInferenceService(args.model_path)
+    try:
+        svc.initialize()
+        svc.run()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        sys.stderr.write(f"FATAL: {e}\n")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+FLUX_PYTORCH_SINGLE_EOF
+    else
+        # Single-model: Z-Image PyTorch only (default)
+        # Generate Z-Image script as inference_zimage.py, then symlink
+        echo -e "  ${CYAN}  Generating Z-Image PyTorch inference script...${NC}"
+        # We need to generate the same Z-Image content here
+        # Using a slightly different approach: copy from the embedded content
+        # The Z-Image script has face-swap and video support
+        cat > "$INSTALL_DIR/scripts/inference_zimage.py" << 'ZIMAGE_SINGLE_EOF'
+#!/usr/bin/env python3
+"""
+Power Node Inference Service (PyTorch/Z-Image-Turbo)
+For Blackwell GPUs (RTX 50-series) with 14GB+ VRAM
+"""
+
+import sys
+import json
+import base64
+import io
+import os
+import argparse
+import random
+import gc
+import time
+import threading
+
+# Import shared utilities (security constants and common functions)
+from shared_utils import (
+    ALLOWED_HOSTS, MAX_DOWNLOAD_SIZE, FACESWAP_IDLE_TIMEOUT,
+    validate_image_url, download_with_limit, detect_vram_gb
+)
+
+
+class InferenceService:
+    def __init__(self, model_path, vae_path=None):
+        self.model_path = model_path
+        self.vae_path = vae_path
+        self.pipe = None
+        # Face-swap model lifecycle tracking
+        self._face_swapper = None
+        self._faceswap_funcs = None
+        self._last_faceswap_time = 0
+        self._faceswap_lock = threading.Lock()
+        self._start_cleanup_thread()
+
+    def _start_cleanup_thread(self):
+        """Start background thread to unload idle face-swap models."""
+        def cleanup_loop():
+            import torch
+            while True:
+                time.sleep(60)
+                with self._faceswap_lock:
+                    if self._face_swapper and time.time() - self._last_faceswap_time > FACESWAP_IDLE_TIMEOUT:
+                        sys.stderr.write("Unloading idle face-swap models (5 min timeout)...\n")
+                        sys.stderr.flush()
+                        self._face_swapper = None
+                        self._faceswap_funcs = None
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+        t = threading.Thread(target=cleanup_loop, daemon=True)
+        t.start()
+
+    def initialize(self):
+        import torch
+        from diffusers import ZImagePipeline
+
+        sys.stderr.write("=== Power Node Inference Service (PyTorch) ===\n")
+        sys.stderr.write(f"Model: {self.model_path}\n")
+        sys.stderr.flush()
+
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Model not found: {self.model_path}")
+
+        sys.stderr.write("Loading model (this may take a minute)...\n")
+        sys.stderr.flush()
+
+        self.pipe = ZImagePipeline.from_pretrained(
+            self.model_path,
+            torch_dtype=torch.bfloat16,
+        )
+
+        self.pipe.enable_model_cpu_offload()
+
+        sys.stderr.write("Ready.\n")
+        sys.stderr.flush()
+
+    def generate(self, prompt, width=1024, height=1024, steps=8, seed=-1, negative_prompt=None):
+        # negative_prompt accepted but ignored (Z-Image-Turbo is a distilled model)
+        import torch
+
+        if self.pipe is None:
+            sys.stderr.write("Z-Image model not loaded, reloading...\n")
+            sys.stderr.flush()
+            self.initialize()
+
+        sys.stderr.write(f"Generating: {prompt[:50]}...\n")
+        sys.stderr.flush()
+
+        if seed == -1:
+            seed = random.randint(0, 2**31 - 1)
+
+        generator = torch.Generator("cuda").manual_seed(seed)
+
+        image = self.pipe(
+            prompt=prompt,
+            width=width,
+            height=height,
+            num_inference_steps=steps,
+            guidance_scale=0.0,
+            generator=generator,
+        ).images[0]
+
+        buf = io.BytesIO()
+        image.save(buf, format='PNG')
+
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return {"image_data": base64.b64encode(buf.getvalue()).decode(), "format": "png"}
+
+    def handle_request(self, req):
+        try:
+            method = req.get("method")
+            if method == "generate":
+                return {"id": req.get("id", 0), "result": self.generate(**req.get("params", {})), "error": None}
+            return {"id": req.get("id", 0), "result": None, "error": f"Unknown method: {method}"}
+        except Exception as e:
+            return {"id": req.get("id", 0), "result": None, "error": str(e)}
+
+    def run(self):
+        sys.stderr.write("Waiting for requests...\n")
+        sys.stderr.flush()
+        for line in sys.stdin:
+            if line.strip():
+                print(json.dumps(self.handle_request(json.loads(line))), flush=True)
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--model", "-m", required=True, help="Path to Z-Image-Turbo model directory")
+    p.add_argument("--vae", "-v", help="Path to VAE (optional)")
+    args = p.parse_args()
+
+    svc = InferenceService(args.model, args.vae)
+    try:
+        svc.initialize()
+        svc.run()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        sys.stderr.write(f"FATAL: {e}\n")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+ZIMAGE_SINGLE_EOF
+        chmod +x "$INSTALL_DIR/scripts/inference_zimage.py"
+        # Create symlink for default entry point
+        ln -sf "$INSTALL_DIR/scripts/inference_zimage.py" "$INSTALL_DIR/scripts/inference.py"
+        echo -e "  ${GREEN}✓${NC} Z-Image PyTorch script created"
     fi
 fi
 
-chmod +x "$INSTALL_DIR/scripts/inference.py"
+chmod +x "$INSTALL_DIR/scripts/inference.py" 2>/dev/null || true
 
 # =============================================================================
 # Install Face-Swap Module

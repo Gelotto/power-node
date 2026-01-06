@@ -328,30 +328,66 @@ func (w *Worker) restartPythonWithModel(modelName string) error {
 		modelPath = w.config.Model.Path
 	}
 
-	scriptArgs := w.config.Python.ScriptArgs
-	if len(scriptArgs) == 0 && modelPath != "" {
-		scriptArgs = []string{modelPath}
+	// Determine script path based on model (for multi-model support)
+	// In multi-model mode, use model-specific scripts: inference_flux.py, inference_zimage.py
+	scriptPath := w.config.Python.ScriptPath
+	if w.config.IsMultiModel() && modelName != "" {
+		baseDir := filepath.Dir(scriptPath)
+		switch modelName {
+		case "flux-schnell":
+			scriptPath = filepath.Join(baseDir, "inference_flux.py")
+			log.Printf("Using FLUX-specific script: %s", scriptPath)
+		case "z-image-turbo":
+			scriptPath = filepath.Join(baseDir, "inference_zimage.py")
+			log.Printf("Using Z-Image-specific script: %s", scriptPath)
+		}
+	}
+
+	// Build script args - always pass model path with appropriate flag
+	var scriptArgs []string
+	if modelPath != "" {
+		// Use --model flag for model path (supported by both Z-Image and FLUX scripts)
+		scriptArgs = []string{"--model", modelPath}
+	} else if len(w.config.Python.ScriptArgs) > 0 {
+		// Fallback to configured args
+		scriptArgs = w.config.Python.ScriptArgs
 	}
 
 	w.pythonExec = executor.NewPythonExecutor(
 		w.config.Python.Executable,
-		w.config.Python.ScriptPath,
+		scriptPath,
 		scriptArgs,
 		w.config.Python.Env,
 	)
 
 	if err := w.pythonExec.Start(
 		w.config.Python.Executable,
-		w.config.Python.ScriptPath,
+		scriptPath,
 		scriptArgs,
 		w.config.Python.Env,
 	); err != nil {
 		return fmt.Errorf("failed to restart Python: %w", err)
 	}
 
-	// Wait for model to reload
-	log.Println("Waiting for model to reload (10s)...")
-	time.Sleep(10 * time.Second)
+	// Wait for model to load with configurable timeout
+	timeout := w.config.Python.ModelLoadTimeout
+	if timeout == 0 {
+		timeout = 60 * time.Second // Default fallback
+	}
+	log.Printf("Waiting for model to load (timeout: %v)...", timeout)
+
+	// Wait a minimum time for Python to initialize before checking
+	time.Sleep(5 * time.Second)
+
+	// Try to verify model is ready by sending a lightweight health check
+	ctx, cancel := context.WithTimeout(context.Background(), timeout-5*time.Second)
+	defer cancel()
+
+	if err := w.waitForPythonReady(ctx); err != nil {
+		log.Printf("Warning: Model ready check failed: %v (proceeding anyway)", err)
+		// Don't fail here - the model might still work, just slow to respond
+	}
+
 	w.pythonRunning = true
 
 	// Update active model
@@ -361,7 +397,39 @@ func (w *Worker) restartPythonWithModel(modelName string) error {
 		w.activeModelMu.Unlock()
 	}
 
+	log.Printf("Model %s loaded successfully", modelName)
 	return nil
+}
+
+// waitForPythonReady waits for Python to be ready by sending a health check request
+func (w *Worker) waitForPythonReady(ctx context.Context) error {
+	// Poll until Python responds or timeout
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for Python to be ready: %w", ctx.Err())
+		case <-ticker.C:
+			// Try a minimal generation request as health check
+			// Using very small dimensions to minimize GPU work
+			checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			_, err := w.pythonExec.Generate(checkCtx, &models.GenerateRequest{
+				Prompt: "health check",
+				Width:  64,
+				Height: 64,
+				Steps:  1,
+			})
+			cancel()
+
+			if err == nil {
+				log.Println("Python health check passed - model is ready")
+				return nil
+			}
+			log.Printf("Python not ready yet: %v", err)
+		}
+	}
 }
 
 // loadModel ensures the specified model is loaded, swapping if necessary

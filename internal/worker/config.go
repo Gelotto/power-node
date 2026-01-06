@@ -81,10 +81,11 @@ type WorkerConfig struct {
 
 // PythonConfig holds Python interpreter settings
 type PythonConfig struct {
-	Executable string            `yaml:"executable"`
-	ScriptPath string            `yaml:"script_path"`
-	ScriptArgs []string          `yaml:"script_args"`
-	Env        map[string]string `yaml:"env"`
+	Executable       string            `yaml:"executable"`
+	ScriptPath       string            `yaml:"script_path"`
+	ScriptArgs       []string          `yaml:"script_args"`
+	Env              map[string]string `yaml:"env"`
+	ModelLoadTimeout time.Duration     `yaml:"model_load_timeout"` // Timeout for model loading (default: 60s, max: 120s)
 }
 
 // IdleConfig holds GPU idle detection settings (opt-in feature)
@@ -143,6 +144,11 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Python.ScriptPath == "" {
 		cfg.Python.ScriptPath = "scripts/inference.py"
+	}
+	if cfg.Python.ModelLoadTimeout == 0 {
+		cfg.Python.ModelLoadTimeout = 60 * time.Second // Default: 60s for model loading
+	} else if cfg.Python.ModelLoadTimeout > 120*time.Second {
+		cfg.Python.ModelLoadTimeout = 120 * time.Second // Max: 120s
 	}
 
 	// Video config defaults
