@@ -219,6 +219,39 @@ go build -o bin/power-node ./cmd/power-node
 |----------|-------------|---------|
 | `POWER_NODE_DIR` | Installation directory | `~/.power-node` |
 | `API_URL` | Backend API URL | `https://api.gelotto.io` |
+| `HF_TOKEN` | HuggingFace token for FLUX model (PyTorch mode only) | - |
+
+## Multi-Model Support
+
+With 12GB+ VRAM, the installer automatically configures **multi-model mode** with both:
+- **Z-Image-Turbo** - Fast generation, good quality
+- **FLUX.1-schnell** - Excellent prompt understanding, ultra-fast
+
+The worker dynamically switches between models based on job requirements.
+
+### FLUX.1-schnell (PyTorch/Blackwell GPUs)
+
+FLUX.1-schnell is a **gated model** on HuggingFace requiring authentication. This only affects PyTorch mode (RTX 50-series Blackwell GPUs). GGUF mode uses an ungated source.
+
+**To enable FLUX on Blackwell GPUs:**
+
+1. **Accept the license**: https://huggingface.co/black-forest-labs/FLUX.1-schnell
+2. **Create an access token**: https://huggingface.co/settings/tokens
+   - Token type: **Read** (simplest option)
+   - Or Fine-grained with: "Read access to contents of all public gated repos you can access"
+3. **Run installer with token**:
+
+```bash
+HF_TOKEN=hf_xxxxxxxxxxxxx curl -sSL https://raw.githubusercontent.com/Gelotto/power-node/main/install.sh | bash
+```
+
+Or set it in your environment first:
+```bash
+export HF_TOKEN=hf_xxxxxxxxxxxxx
+curl -sSL https://raw.githubusercontent.com/Gelotto/power-node/main/install.sh | bash
+```
+
+**Without HF_TOKEN**: The installer will skip FLUX and install Z-Image-Turbo only. You can re-run with the token later to add FLUX.
 
 ## License
 
