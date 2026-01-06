@@ -2,8 +2,13 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/release.yml'
 
 permissions:
   contents: write
@@ -12,77 +17,61 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+      - run: go test ./... -race -coverprofile=coverage.out
+      - run: go tool cover -func=coverage.out | tail -1
 
-      - name: Run tests
-        run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
-
-      - name: Display coverage
-        run: go tool cover -func=coverage.out | tail -1
-
-  build:
+  build-and-release:
     needs: test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            artifact_arch: x86_64
-          - goos: linux
-            goarch: arm64
-            artifact_arch: arm64
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for version
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
 
-      - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+      - name: Generate version
+        id: version
         run: |
-          VERSION=${GITHUB_REF#refs/tags/}
-          go build -ldflags="-s -w -X main.Version=$VERSION" -o power-node-${{ matrix.goos }}-${{ matrix.artifact_arch }} ./cmd/power-node
+          # Count commits on main for version
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          VERSION="v0.3.${COMMIT_COUNT}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Generated version: ${VERSION}"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: power-node-${{ matrix.goos }}-${{ matrix.artifact_arch }}
-          path: power-node-${{ matrix.goos }}-${{ matrix.artifact_arch }}
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Prepare release files
+      - name: Build binaries
         run: |
-          mkdir release
-          for dir in artifacts/*/; do
-            binary=$(basename "$dir")
-            cp "$dir/$binary" "release/$binary"
-            chmod +x "release/$binary"
-          done
+          VERSION=${{ steps.version.outputs.version }}
 
-      - name: Create Release
+          # Linux x86_64
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w -X main.Version=$VERSION" \
+            -o power-node-linux-x86_64 ./cmd/power-node
+
+          # Linux arm64
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+            go build -ldflags="-s -w -X main.Version=$VERSION" \
+            -o power-node-linux-arm64 ./cmd/power-node
+
+      - name: Create/Update Release
         uses: softprops/action-gh-release@v1
         with:
-          files: release/*
-          generate_release_notes: true
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: |
+            Auto-release from commit ${{ github.sha }}
+
+            ## Changes
+            ${{ github.event.head_commit.message }}
+          files: |
+            power-node-linux-x86_64
+            power-node-linux-arm64
+          prerelease: false
+          make_latest: true
