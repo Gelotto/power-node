@@ -22,7 +22,10 @@ while [[ "$#" -gt 0 ]]; do
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --model MODEL   Select image model: z-image-turbo (default) or flux-schnell"
+            echo "  --model MODEL   Override auto-detection: z-image-turbo, flux-schnell, or both"
+            echo "                  Default: Auto-detect based on VRAM"
+            echo "                    - 12GB+ VRAM: Both models (multi-model mode)"
+            echo "                    - 8-11GB VRAM: Z-Image-Turbo only"
             echo "  --no-video      Skip video model (auto-downloaded for 12GB+ VRAM PyTorch GPUs)"
             echo "  --no-faceswap   Skip face-swap model (auto-downloaded for 6GB+ VRAM)"
             echo "  --minimal       Skip all optional models (video + face-swap)"
@@ -176,63 +179,78 @@ fi
 echo -e "${GREEN}  ✓ GPU validated${NC}"
 
 # =============================================================================
-# Model Selection
+# Model Selection - Auto-detect based on VRAM
 # =============================================================================
-echo -e "${YELLOW}[3.5/7] Selecting image generation model...${NC}"
+echo -e "${YELLOW}[3.5/7] Auto-detecting supported models based on VRAM...${NC}"
 
-# If not specified via --model flag, show interactive menu
+# Multi-model support flags
+INSTALL_BOTH_MODELS=false
+INSTALL_ZIMAGE=false
+INSTALL_FLUX=false
+
+# Auto-detect supported models based on VRAM (unless --model flag specified)
 if [ -z "$IMAGE_MODEL" ]; then
-    echo ""
-    echo "Available image generation models:"
-    echo -e "  ${GREEN}1)${NC} Z-Image-Turbo (default) - Fast generation, 8GB+ VRAM"
-    echo -e "  ${BLUE}2)${NC} FLUX.1-schnell - Ultra-fast, excellent prompt understanding, 12GB+ VRAM"
-    echo ""
-
-    # Interactive selection if running in terminal
-    if [ -t 0 ]; then
-        read -p "Select model [1]: " MODEL_CHOICE < /dev/tty
+    # Auto-detection mode (default)
+    if [ $VRAM_GB -ge 12 ]; then
+        echo -e "  ${GREEN}12GB+ VRAM detected - enabling both models (multi-model mode)${NC}"
+        IMAGE_MODEL="z-image-turbo"  # Primary model (loaded first)
+        INSTALL_BOTH_MODELS=true
+        INSTALL_ZIMAGE=true
+        INSTALL_FLUX=true
+    elif [ $VRAM_GB -ge 8 ]; then
+        echo -e "  ${YELLOW}8-11GB VRAM detected - enabling Z-Image-Turbo only${NC}"
+        IMAGE_MODEL="z-image-turbo"
+        INSTALL_ZIMAGE=true
     else
-        MODEL_CHOICE="1"
-        echo "  Non-interactive mode: defaulting to Z-Image-Turbo"
+        echo -e "${RED}ERROR: Minimum 8GB VRAM required. Your GPU has ${VRAM_GB}GB.${NC}"
+        exit 1
     fi
-
-    case "$MODEL_CHOICE" in
-        2)
-            IMAGE_MODEL="flux-schnell"
+else
+    # Model specified via --model flag (override auto-detection)
+    echo -e "  Using model specified via --model flag: ${IMAGE_MODEL}"
+    case "$IMAGE_MODEL" in
+        both)
+            if [ $VRAM_GB -ge 12 ]; then
+                IMAGE_MODEL="z-image-turbo"
+                INSTALL_BOTH_MODELS=true
+                INSTALL_ZIMAGE=true
+                INSTALL_FLUX=true
+            else
+                echo -e "${YELLOW}  Both models require 12GB+ VRAM. Using Z-Image-Turbo only.${NC}"
+                IMAGE_MODEL="z-image-turbo"
+                INSTALL_ZIMAGE=true
+            fi
+            ;;
+        flux-schnell)
+            if [ $VRAM_GB -lt 12 ]; then
+                echo -e "${RED}ERROR: FLUX.1-schnell requires at least 12GB VRAM. Your GPU has ${VRAM_GB}GB.${NC}"
+                exit 1
+            fi
+            INSTALL_FLUX=true
+            ;;
+        z-image-turbo)
+            INSTALL_ZIMAGE=true
             ;;
         *)
-            IMAGE_MODEL="z-image-turbo"
+            echo -e "${RED}ERROR: Invalid model '$IMAGE_MODEL'. Use 'z-image-turbo', 'flux-schnell', or 'both'.${NC}"
+            exit 1
             ;;
     esac
 fi
 
-# Validate model choice
-case "$IMAGE_MODEL" in
-    z-image-turbo|flux-schnell)
-        ;;
-    *)
-        echo -e "${RED}ERROR: Invalid model '$IMAGE_MODEL'. Use 'z-image-turbo' or 'flux-schnell'.${NC}"
-        exit 1
-        ;;
-esac
-
-# VRAM warnings for FLUX
-if [ "$IMAGE_MODEL" = "flux-schnell" ]; then
-    if [ $VRAM_GB -lt 10 ]; then
-        echo -e "${RED}ERROR: FLUX.1-schnell requires at least 10GB VRAM. Your GPU has ${VRAM_GB}GB.${NC}"
-        echo "Please choose Z-Image-Turbo instead (supports 8GB+ VRAM)."
-        exit 1
-    elif [ $VRAM_GB -lt 12 ]; then
-        echo -e "${YELLOW}  Warning: FLUX.1-schnell works best with 12GB+ VRAM.${NC}"
-        echo -e "${YELLOW}  Using aggressive quantization (Q4) for ${VRAM_GB}GB VRAM.${NC}"
-    fi
-    # FLUX workers don't support video or face-swap
+# Video/face-swap only available with Z-Image
+if [ "$INSTALL_FLUX" = true ] && [ "$INSTALL_ZIMAGE" = false ]; then
     SKIP_VIDEO=true
     SKIP_FACESWAP=true
-    echo -e "${YELLOW}  Note: Video and face-swap are not available with FLUX.1-schnell.${NC}"
+    echo -e "${YELLOW}  Note: Video and face-swap are not available with FLUX-only mode.${NC}"
 fi
 
-echo -e "  Selected model: ${GREEN}$IMAGE_MODEL${NC}"
+if [ "$INSTALL_BOTH_MODELS" = true ]; then
+    echo -e "  Selected models: ${GREEN}z-image-turbo${NC} + ${BLUE}flux-schnell${NC} (multi-model mode)"
+    echo -e "  ${CYAN}  Worker will dynamically switch between models based on job requirements${NC}"
+else
+    echo -e "  Selected model: ${GREEN}$IMAGE_MODEL${NC}"
+fi
 
 # =============================================================================
 # Create Directory Structure
@@ -2167,6 +2185,42 @@ video:
 VIDEOEOF
         fi
     fi
+fi
+
+# Add multi-model config section if both models installed
+if [ "$INSTALL_BOTH_MODELS" = true ]; then
+    echo "" >> "$INSTALL_DIR/config/config.yaml"
+    if [ "$SERVICE_MODE" = "gguf" ]; then
+        cat >> "$INSTALL_DIR/config/config.yaml" << MODELSEOF
+models:
+  models:
+    - name: z-image-turbo
+      path: "$INSTALL_DIR/models/z-image-turbo"
+      vram_required: 8
+      priority: 0
+    - name: flux-schnell
+      path: "$INSTALL_DIR/models/flux-schnell"
+      vram_required: 12
+      priority: 1
+  idle_timeout: 5m
+MODELSEOF
+    else
+        # PyTorch mode
+        cat >> "$INSTALL_DIR/config/config.yaml" << MODELSEOF
+models:
+  models:
+    - name: z-image-turbo
+      path: "$INSTALL_DIR/models/z-image-turbo"
+      vram_required: 8
+      priority: 0
+    - name: flux-schnell
+      path: "$INSTALL_DIR/models/flux-schnell"
+      vram_required: 12
+      priority: 1
+  idle_timeout: 5m
+MODELSEOF
+    fi
+    echo -e "${GREEN}  ✓ Multi-model config added${NC}"
 fi
 
 # Add faceswap config if models were downloaded
