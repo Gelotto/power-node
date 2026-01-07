@@ -44,8 +44,14 @@ class FLUXInferenceService:
 
         # Memory optimization based on VRAM
         if self.vram_gb < 20:
-            sys.stderr.write("Enabling model CPU offload for memory optimization\n")
-            self.pipe.enable_model_cpu_offload()
+            # Sequential offload moves individual layers to GPU one at a time
+            # This uses much less VRAM than model_cpu_offload (which keeps whole model on GPU)
+            sys.stderr.write("Enabling sequential CPU offload for low VRAM (<20GB)\n")
+            self.pipe.enable_sequential_cpu_offload()
+            # VAE optimizations further reduce memory during decode
+            self.pipe.vae.enable_tiling()
+            self.pipe.vae.enable_slicing()
+            sys.stderr.write("VAE tiling and slicing enabled\n")
         else:
             self.pipe = self.pipe.to("cuda")
 
