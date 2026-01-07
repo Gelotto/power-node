@@ -43,7 +43,7 @@ func NewGPUMonitor(config IdleConfig) (*GPUMonitor, error) {
 	// Get first GPU device
 	device, ret := nvml.DeviceGetHandleByIndex(0)
 	if ret != nvml.SUCCESS {
-		nvml.Shutdown()
+		_ = nvml.Shutdown()
 		return nil, fmt.Errorf("failed to get GPU device: %v", nvml.ErrorString(ret))
 	}
 
@@ -64,7 +64,7 @@ func (m *GPUMonitor) Start() {
 // Stop stops the monitoring loop
 func (m *GPUMonitor) Stop() {
 	close(m.stopChan)
-	nvml.Shutdown()
+	_ = nvml.Shutdown()
 }
 
 // IsPaused returns whether the worker should be paused

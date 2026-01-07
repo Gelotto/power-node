@@ -203,7 +203,7 @@ func (m *MockAPIServer) handleComplete(w http.ResponseWriter, r *http.Request) {
 	// Parse complete data
 	body, _ := io.ReadAll(r.Body)
 	var data map[string]interface{}
-	json.Unmarshal(body, &data)
+	_ = json.Unmarshal(body, &data)
 
 	m.mu.Lock()
 	if jobID, ok := data["job_id"].(string); ok {
@@ -237,7 +237,7 @@ func (m *MockAPIServer) handleFail(w http.ResponseWriter, r *http.Request) {
 	// Parse fail data
 	body, _ := io.ReadAll(r.Body)
 	var data map[string]interface{}
-	json.Unmarshal(body, &data)
+	_ = json.Unmarshal(body, &data)
 
 	m.mu.Lock()
 	if jobID, ok := data["job_id"].(string); ok {

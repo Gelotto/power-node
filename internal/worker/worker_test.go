@@ -654,7 +654,7 @@ func NewMockAPIServer(t *testing.T) *MockAPIServer {
 			// Parse heartbeat data
 			body, _ := io.ReadAll(r.Body)
 			var data map[string]interface{}
-			json.Unmarshal(body, &data)
+			_ = json.Unmarshal(body, &data)
 			if hd, ok := data["heartbeat_data"].(map[string]interface{}); ok {
 				mock.lastHeartbeat = &client.HeartbeatData{}
 				if h, ok := hd["hostname"].(string); ok {
@@ -672,7 +672,7 @@ func NewMockAPIServer(t *testing.T) *MockAPIServer {
 					w.WriteHeader(http.StatusNoContent)
 				} else {
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(job)
+					_ = json.NewEncoder(w).Encode(job)
 				}
 			} else {
 				w.WriteHeader(http.StatusNoContent)
@@ -690,7 +690,7 @@ func NewMockAPIServer(t *testing.T) *MockAPIServer {
 			mock.completeCalls++
 			body, _ := io.ReadAll(r.Body)
 			var data map[string]interface{}
-			json.Unmarshal(body, &data)
+			_ = json.Unmarshal(body, &data)
 			if jid, ok := data["job_id"].(string); ok {
 				mock.lastCompleteJob = jid
 			}
@@ -700,7 +700,7 @@ func NewMockAPIServer(t *testing.T) *MockAPIServer {
 			mock.failCalls++
 			body, _ := io.ReadAll(r.Body)
 			var data map[string]interface{}
-			json.Unmarshal(body, &data)
+			_ = json.Unmarshal(body, &data)
 			if jid, ok := data["job_id"].(string); ok {
 				mock.lastFailJob = jid
 			}

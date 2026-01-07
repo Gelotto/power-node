@@ -420,7 +420,7 @@ func TestStop_ClosesStopChan(t *testing.T) {
 		close(stopped)
 	}()
 
-	worker.Stop()
+	_ = worker.Stop()
 
 	// stopChan should be closed
 	select {

@@ -112,7 +112,7 @@ func TestHeartbeat_Success(t *testing.T) {
 		}
 
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
+		_ = json.Unmarshal(body, &receivedBody)
 
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -196,7 +196,7 @@ func TestHeartbeat_MinimalData(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
+		_ = json.Unmarshal(body, &receivedBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -347,7 +347,7 @@ func TestClaimJob_FaceSwapJob(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":               "faceswap-job-123",
 			"type":             "face_swap",
 			"status":           "claimed",
@@ -430,7 +430,7 @@ func TestClaimJob_MalformedJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"id": "job-123", "type": invalid_json`))
+		_, _ = w.Write([]byte(`{"id": "job-123", "type": invalid_json`))
 	}))
 	defer server.Close()
 
@@ -455,7 +455,7 @@ func TestStartProcessing_Success(t *testing.T) {
 		}
 
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
+		_ = json.Unmarshal(body, &receivedBody)
 
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -485,7 +485,7 @@ func TestReportProgress_Success(t *testing.T) {
 		}
 
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
+		_ = json.Unmarshal(body, &receivedBody)
 
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -518,7 +518,7 @@ func TestCompleteJob_Image_Success(t *testing.T) {
 		}
 
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
+		_ = json.Unmarshal(body, &receivedBody)
 
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -554,7 +554,7 @@ func TestCompleteJob_Video_Success(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
+		_ = json.Unmarshal(body, &receivedBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -583,7 +583,7 @@ func TestCompleteFaceSwapJob_Success(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
+		_ = json.Unmarshal(body, &receivedBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -618,7 +618,7 @@ func TestCompleteFaceSwapJob_GIF_Success(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
+		_ = json.Unmarshal(body, &receivedBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -644,7 +644,7 @@ func TestFailJob_Success(t *testing.T) {
 		}
 
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
+		_ = json.Unmarshal(body, &receivedBody)
 
 		w.WriteHeader(http.StatusOK)
 	}))

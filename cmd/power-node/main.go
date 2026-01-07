@@ -104,7 +104,7 @@ func main() {
 	case err := <-errChan:
 		log.Printf("Worker error: %v", err)
 		cancel()
-		w.Stop()
+		_ = w.Stop()
 		os.Exit(1)
 	}
 
@@ -299,7 +299,7 @@ func selfUpdate() error {
 	}
 
 	_, err = io.Copy(tmpFile, resp.Body)
-	tmpFile.Close()
+	_ = tmpFile.Close()
 	if err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to write update: %w", err)
@@ -307,7 +307,7 @@ func selfUpdate() error {
 
 	// Backup old binary
 	backupPath := execPath + ".old"
-	os.Remove(backupPath) // Remove old backup if exists
+	_ = os.Remove(backupPath) // Remove old backup if exists
 	if err := os.Rename(execPath, backupPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("failed to backup current binary: %w", err)
@@ -316,7 +316,7 @@ func selfUpdate() error {
 	// Move new binary into place
 	if err := os.Rename(tmpPath, execPath); err != nil {
 		// Try to restore backup
-		os.Rename(backupPath, execPath)
+		_ = os.Rename(backupPath, execPath)
 		return fmt.Errorf("failed to install update: %w", err)
 	}
 
