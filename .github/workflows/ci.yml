@@ -10,43 +10,136 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+      - uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-
+          cache: true
       - name: Verify dependencies
         run: go mod verify
-
       - name: Run go vet
         run: go vet ./...
-
       - name: Run tests with race detector
         run: go test ./... -race -coverprofile=coverage.out -covermode=atomic
-
       - name: Display coverage
         run: go tool cover -func=coverage.out | tail -1
 
-  build:
-    needs: test
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: Validate shell scripts
+        run: |
+          bash -n install.sh
+          bash -n scripts/install/install.sh
+          for f in scripts/install/lib/*.sh; do bash -n "$f"; done
+      - name: Validate Python scripts
+        run: python3 -m py_compile scripts/inference/*.py
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+  build:
+    needs: [lint, test, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-
+          cache: true
       - name: Build
         run: go build ./cmd/power-node
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Check for Go changes
+        id: changes
+        run: |
+          # Check if any Go files changed in the last commit
+          if git diff --name-only HEAD~1 | grep -qE '\.(go|mod|sum)$'; then
+            echo "go_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "go_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install cross-compiler
+        if: steps.changes.outputs.go_changed == 'true'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Generate version
+        if: steps.changes.outputs.go_changed == 'true'
+        id: version
+        run: |
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          VERSION="v0.3.${COMMIT_COUNT}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Generated version: ${VERSION}"
+
+      - name: Build binaries
+        if: steps.changes.outputs.go_changed == 'true'
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+
+          # Linux x86_64 (CGO required for go-nvml, uses dlopen at runtime)
+          GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w -X main.Version=$VERSION -extldflags=-Wl,-z,lazy" \
+            -o power-node-linux-x86_64 ./cmd/power-node
+
+          # Linux arm64 (cross-compile with arm64 gcc)
+          GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc CGO_ENABLED=1 \
+            go build -ldflags="-s -w -X main.Version=$VERSION -extldflags=-Wl,-z,lazy" \
+            -o power-node-linux-arm64 ./cmd/power-node
+
+      - name: Generate checksums
+        if: steps.changes.outputs.go_changed == 'true'
+        run: sha256sum power-node-* > checksums.txt
+
+      - name: Create/Update Release
+        if: steps.changes.outputs.go_changed == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: |
+            Auto-release from commit ${{ github.sha }}
+
+            ## Changes
+            ${{ github.event.head_commit.message }}
+          files: |
+            power-node-linux-x86_64
+            power-node-linux-arm64
+            checksums.txt
+          prerelease: false
+          make_latest: true
