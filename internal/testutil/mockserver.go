@@ -112,7 +112,7 @@ func (m *MockAPIServer) handleHeartbeat(w http.ResponseWriter, r *http.Request) 
 	// Parse and store heartbeat data
 	body, _ := io.ReadAll(r.Body)
 	var data map[string]interface{}
-	json.Unmarshal(body, &data)
+	_ = json.Unmarshal(body, &data)
 
 	m.mu.Lock()
 	m.LastHeartbeatData = data
@@ -144,7 +144,7 @@ func (m *MockAPIServer) handleClaim(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		} else {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(job)
+			_ = json.NewEncoder(w).Encode(job)
 		}
 	} else {
 		w.WriteHeader(http.StatusNoContent)
@@ -173,7 +173,7 @@ func (m *MockAPIServer) handleProgress(w http.ResponseWriter, r *http.Request) {
 	// Parse progress data
 	body, _ := io.ReadAll(r.Body)
 	var data map[string]interface{}
-	json.Unmarshal(body, &data)
+	_ = json.Unmarshal(body, &data)
 
 	m.mu.Lock()
 	if jobID, ok := data["job_id"].(string); ok {

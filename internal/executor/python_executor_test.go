@@ -755,7 +755,7 @@ func TestProgressCallbackInvocation(t *testing.T) {
 	progressJSON := `{"type": "progress", "step": 10, "total_steps": 50, "progress_percent": 20.0, "frames_completed": 24}`
 
 	var progress models.ProgressMessage
-	json.Unmarshal([]byte(progressJSON), &progress)
+	_ = json.Unmarshal([]byte(progressJSON), &progress)
 
 	// Invoke callback (this is what handleResponses does)
 	if cb := exec.getProgressCallback(); cb != nil {

@@ -225,7 +225,7 @@ func TestHeartbeat_MinimalData(t *testing.T) {
 func TestHeartbeat_ServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "internal server error"}`))
+		_, _ = w.Write([]byte(`{"error": "internal server error"}`))
 	}))
 	defer server.Close()
 
@@ -249,7 +249,7 @@ func TestClaimJob_Success(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":     "job-123",
 			"type":   "image",
 			"status": "claimed",
@@ -309,7 +309,7 @@ func TestClaimJob_VideoJob(t *testing.T) {
 		fps := 24
 		totalFrames := 120
 
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":               "video-job-123",
 			"type":             "video",
 			"status":           "claimed",
@@ -385,7 +385,7 @@ func TestClaimJob_FaceSwapJob(t *testing.T) {
 func TestClaimJob_ServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "database connection failed"}`))
+		_, _ = w.Write([]byte(`{"error": "database connection failed"}`))
 	}))
 	defer server.Close()
 
@@ -407,7 +407,7 @@ func TestClaimJob_ServerError(t *testing.T) {
 func TestClaimJob_Unauthorized(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error": "invalid API key"}`))
+		_, _ = w.Write([]byte(`{"error": "invalid API key"}`))
 	}))
 	defer server.Close()
 
@@ -697,7 +697,7 @@ func TestAuthorizationHeader(t *testing.T) {
 			defer server.Close()
 
 			client := NewAPIClient(server.URL, tt.apiKey)
-			client.Heartbeat(context.Background(), "worker-123", "online", nil)
+			_ = client.Heartbeat(context.Background(), "worker-123", "online", nil)
 
 			if receivedAuth != tt.want {
 				t.Errorf("Authorization header = %q, want %q", receivedAuth, tt.want)
