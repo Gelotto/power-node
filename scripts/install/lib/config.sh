@@ -42,7 +42,28 @@ generate_config() {
     local service_mode="$1"
     local model_name="$2"
     local script_path="$3"
-    local script_args="$4"
+    shift 3
+    local script_args=("$@")  # Remaining args as array
+
+    # Preserve existing credentials if config exists
+    local existing_api_key=""
+    local existing_worker_id=""
+    if [ -f "$INSTALL_DIR/config/config.yaml" ]; then
+        existing_api_key=$(grep -E "^\s*key:" "$INSTALL_DIR/config/config.yaml" | head -1 | sed 's/.*key:\s*//' | tr -d '"' | tr -d "'" | xargs)
+        existing_worker_id=$(grep -E "^\s*id:" "$INSTALL_DIR/config/config.yaml" | head -1 | sed 's/.*id:\s*//' | tr -d '"' | tr -d "'" | xargs)
+    fi
+
+    # Use existing key or placeholder (skip placeholder-like values)
+    local api_key="\${POWER_NODE_API_KEY}"
+    if [ -n "$existing_api_key" ] && [[ "$existing_api_key" == wk_* ]]; then
+        api_key="$existing_api_key"
+    fi
+
+    # Build worker section with optional id
+    local worker_id_line=""
+    if [ -n "$existing_worker_id" ] && [[ "$existing_worker_id" =~ ^[0-9a-f-]{36}$ ]]; then
+        worker_id_line=$'\n  id: '"$existing_worker_id"
+    fi
 
     cat > "$INSTALL_DIR/config/config.yaml" << EOF
 # Power Node Configuration
@@ -50,9 +71,9 @@ generate_config() {
 
 api:
   url: $API_URL
-  key: "\${POWER_NODE_API_KEY}"  # Set via environment variable
+  key: "$api_key"
 
-worker:
+worker:${worker_id_line}
   heartbeat_interval: 30s
   job_timeout: 5m
 
@@ -68,45 +89,45 @@ python:
   venv_path: $INSTALL_DIR/venv
   script_path: $script_path
   script_args:
-    $script_args
 EOF
+
+    # Append script_args as proper YAML array
+    for arg in "${script_args[@]}"; do
+        echo "    - \"$arg\"" >> "$INSTALL_DIR/config/config.yaml"
+    done
 }
 
 # Generate config for GGUF Z-Image mode
 generate_gguf_zimage_config() {
     local quant="${1:-Q8_0}"
-    local script_args="--diffusion $INSTALL_DIR/models/diffusion/z-image-turbo-${quant}.gguf
-    --vae $INSTALL_DIR/models/vae/sdxl_vae.safetensors
-    --text-encoder $INSTALL_DIR/models/text_encoder/Qwen2.5-0.5B-${quant}.gguf
-    --vram $VRAM_GB"
-
-    generate_config "gguf" "z-image-turbo" "$INSTALL_DIR/scripts/inference.py" "$script_args"
+    generate_config "gguf" "z-image-turbo" "$INSTALL_DIR/scripts/inference.py" \
+        "--diffusion" "$INSTALL_DIR/models/diffusion/z-image-turbo-${quant}.gguf" \
+        "--vae" "$INSTALL_DIR/models/vae/sdxl_vae.safetensors" \
+        "--text-encoder" "$INSTALL_DIR/models/text_encoder/Qwen2.5-0.5B-${quant}.gguf" \
+        "--vram" "$VRAM_GB"
 }
 
 # Generate config for GGUF FLUX mode
 generate_gguf_flux_config() {
     local quant="${1:-Q8_0}"
-    local script_args="--diffusion $INSTALL_DIR/models/diffusion/flux1-schnell-${quant}.gguf
-    --clip $INSTALL_DIR/models/text_encoder/clip_l.safetensors
-    --t5 $INSTALL_DIR/models/text_encoder/t5xxl_fp16.safetensors
-    --vae $INSTALL_DIR/models/vae/ae.safetensors
-    --vram $VRAM_GB"
-
-    generate_config "gguf" "flux-schnell" "$INSTALL_DIR/scripts/inference.py" "$script_args"
+    generate_config "gguf" "flux-schnell" "$INSTALL_DIR/scripts/inference.py" \
+        "--diffusion" "$INSTALL_DIR/models/diffusion/flux1-schnell-${quant}.gguf" \
+        "--clip" "$INSTALL_DIR/models/text_encoder/clip_l.safetensors" \
+        "--t5" "$INSTALL_DIR/models/text_encoder/t5xxl_fp16.safetensors" \
+        "--vae" "$INSTALL_DIR/models/vae/ae.safetensors" \
+        "--vram" "$VRAM_GB"
 }
 
 # Generate config for PyTorch Z-Image mode
 generate_pytorch_zimage_config() {
-    local script_args="--model $INSTALL_DIR/models/Z-Image-Turbo"
-
-    generate_config "pytorch" "z-image-turbo" "$INSTALL_DIR/scripts/inference.py" "$script_args"
+    generate_config "pytorch" "z-image-turbo" "$INSTALL_DIR/scripts/inference.py" \
+        "--model" "$INSTALL_DIR/models/Z-Image-Turbo"
 }
 
 # Generate config for PyTorch FLUX mode
 generate_pytorch_flux_config() {
-    local script_args="--model $INSTALL_DIR/models/FLUX.1-schnell"
-
-    generate_config "pytorch" "flux-schnell" "$INSTALL_DIR/scripts/inference.py" "$script_args"
+    generate_config "pytorch" "flux-schnell" "$INSTALL_DIR/scripts/inference.py" \
+        "--model" "$INSTALL_DIR/models/FLUX.1-schnell"
 }
 
 # Append video configuration
