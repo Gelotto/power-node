@@ -231,8 +231,8 @@ generate_configuration() {
         # Add multi-model configuration if both models installed
         if [ "$INSTALL_BOTH_MODELS" = true ]; then
             append_multimodel_config \
-                "$INSTALL_DIR/scripts/inference_zimage.py" \
-                "$INSTALL_DIR/scripts/inference_flux.py"
+                "$INSTALL_DIR/models/Z-Image-Turbo" \
+                "$INSTALL_DIR/models/FLUX.1-schnell"
         fi
 
         # Add video configuration if available

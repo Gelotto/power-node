@@ -139,11 +139,16 @@ class FLUXInferenceService:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="Path to FLUX model")
+    parser.add_argument("--model", help="Path to FLUX model")
     parser.add_argument("--vram", type=int, help="VRAM in GB")
     args = parser.parse_args()
 
-    svc = FLUXInferenceService(args.model, args.vram)
+    # Fallback to environment variable or default path
+    model_path = args.model or os.environ.get("FLUX_MODEL_PATH")
+    if not model_path:
+        model_path = os.path.expanduser("~/.power-node/models/FLUX.1-schnell")
+
+    svc = FLUXInferenceService(model_path, args.vram)
     try:
         svc.initialize()
         svc.run()

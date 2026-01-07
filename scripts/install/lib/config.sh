@@ -123,18 +123,20 @@ EOF
 
 # Append multi-model configuration
 append_multimodel_config() {
-    local zimage_script="$1"
-    local flux_script="$2"
+    local zimage_path="$1"
+    local flux_path="$2"
 
     cat >> "$INSTALL_DIR/config/config.yaml" << EOF
 
 models:
-  z-image-turbo:
-    script_path: $zimage_script
-    priority: 1
-  flux-schnell:
-    script_path: $flux_script
-    priority: 2
+  idle_timeout: 5m
+  models:
+    - name: z-image-turbo
+      path: $zimage_path
+      priority: 0
+    - name: flux-schnell
+      path: $flux_path
+      priority: 1
 EOF
 }
 
