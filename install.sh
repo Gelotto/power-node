@@ -399,7 +399,7 @@ else
     fi
     # Pin diffusers>=0.32.0 for Wan video model support
     # imageio + imageio-ffmpeg required for video export (export_to_video)
-    if ! pip install transformers 'diffusers>=0.32.0' safetensors accelerate tqdm pillow ftfy imageio imageio-ffmpeg --quiet; then
+    if ! pip install transformers 'diffusers>=0.32.0' safetensors accelerate tqdm pillow ftfy imageio imageio-ffmpeg sentencepiece protobuf --quiet; then
         echo -e "${RED}ERROR: Failed to install ML dependencies${NC}"
         exit 1
     fi
