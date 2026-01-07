@@ -158,7 +158,9 @@ func TestJSONRPCRequest_Marshaling(t *testing.T) {
 
 	// Verify structure
 	var result map[string]interface{}
-	json.Unmarshal(data, &result)
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
 
 	if result["id"] != float64(1) {
 		t.Errorf("id = %v, want 1", result["id"])
@@ -226,7 +228,9 @@ func TestJSONRPCFaceSwapRequest_Marshaling(t *testing.T) {
 	}
 
 	var result map[string]interface{}
-	json.Unmarshal(data, &result)
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
 
 	if result["method"] != "face_swap" {
 		t.Errorf("method = %v, want face_swap", result["method"])
@@ -388,7 +392,9 @@ func TestProgressMessage_Detection(t *testing.T) {
 				Type string  `json:"type"`
 				ID   *uint64 `json:"id"`
 			}
-			json.Unmarshal([]byte(tt.jsonData), &msgType)
+			if err := json.Unmarshal([]byte(tt.jsonData), &msgType); err != nil {
+				t.Fatalf("json.Unmarshal failed: %v", err)
+			}
 
 			isProgress := msgType.Type == "progress" && msgType.ID == nil
 
@@ -509,7 +515,7 @@ func TestStart_InvalidPath(t *testing.T) {
 
 	if err == nil {
 		t.Error("Start() with invalid path should return error")
-		exec.Stop()
+		_ = exec.Stop()
 	}
 }
 
@@ -524,7 +530,7 @@ func TestStart_InvalidScript(t *testing.T) {
 
 	if err == nil {
 		// If Start() succeeded, try to stop to clean up
-		exec.Stop()
+		_ = exec.Stop()
 	}
 }
 
@@ -542,7 +548,9 @@ print(json.dumps({"test_var": os.environ.get("TEST_VAR", "")}))
 	}
 	defer os.Remove(tmpFile.Name())
 
-	tmpFile.WriteString(script)
+	if _, err := tmpFile.WriteString(script); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
 	tmpFile.Close()
 
 	// Test that env vars are passed (we can't easily test this without starting process)
@@ -705,7 +713,9 @@ sys.stdout.flush()
 	}
 	defer os.Remove(tmpFile.Name())
 
-	tmpFile.WriteString(script)
+	if _, err := tmpFile.WriteString(script); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
 	tmpFile.Close()
 
 	// We can't easily test the full handleResponses without a real subprocess
@@ -933,7 +943,7 @@ func TestGenerate_WithMockPython(t *testing.T) {
 	if err := executor.Start("python3", scriptPath, nil, nil); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	defer executor.Stop()
+	defer func() { _ = executor.Stop() }()
 
 	// Give Python time to start
 	time.Sleep(100 * time.Millisecond)
@@ -982,7 +992,9 @@ while True:
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
 	defer os.Remove(tmpFile.Name())
-	tmpFile.WriteString(script)
+	if _, err := tmpFile.WriteString(script); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
 	tmpFile.Close()
 
 	executor := NewPythonExecutor("python3", tmpFile.Name(), nil, nil)
@@ -1027,14 +1039,16 @@ while True:
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
 	defer os.Remove(tmpFile.Name())
-	tmpFile.WriteString(script)
+	if _, err := tmpFile.WriteString(script); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
 	tmpFile.Close()
 
 	executor := NewPythonExecutor("python3", tmpFile.Name(), nil, nil)
 	if err := executor.Start("python3", tmpFile.Name(), nil, nil); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	defer executor.Stop()
+	defer func() { _ = executor.Stop() }()
 
 	// Give Python time to start
 	time.Sleep(100 * time.Millisecond)
@@ -1073,7 +1087,7 @@ func TestGenerateVideo_WithMockPython(t *testing.T) {
 	if err := executor.Start("python3", scriptPath, nil, nil); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	defer executor.Stop()
+	defer func() { _ = executor.Stop() }()
 
 	// Set up progress callback
 	var progressReceived bool
@@ -1140,7 +1154,7 @@ func TestGenerateFaceSwap_WithMockPython(t *testing.T) {
 	if err := executor.Start("python3", scriptPath, nil, nil); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	defer executor.Stop()
+	defer func() { _ = executor.Stop() }()
 
 	// Give Python time to start
 	time.Sleep(100 * time.Millisecond)
@@ -1191,14 +1205,16 @@ sys.exit(0)
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
 	defer os.Remove(tmpFile.Name())
-	tmpFile.WriteString(script)
+	if _, err := tmpFile.WriteString(script); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
 	tmpFile.Close()
 
 	executor := NewPythonExecutor("python3", tmpFile.Name(), nil, nil)
 	if err := executor.Start("python3", tmpFile.Name(), nil, nil); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	defer executor.Stop()
+	defer func() { _ = executor.Stop() }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -1233,7 +1249,7 @@ func TestMultipleConcurrentRequests(t *testing.T) {
 	if err := executor.Start("python3", scriptPath, nil, nil); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	defer executor.Stop()
+	defer func() { _ = executor.Stop() }()
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -1305,14 +1321,16 @@ for line in sys.stdin:
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
 	defer os.Remove(tmpFile.Name())
-	tmpFile.WriteString(script)
+	if _, err := tmpFile.WriteString(script); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
 	tmpFile.Close()
 
 	executor := NewPythonExecutor("python3", tmpFile.Name(), nil, nil)
 	if err := executor.Start("python3", tmpFile.Name(), nil, nil); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	defer executor.Stop()
+	defer func() { _ = executor.Stop() }()
 
 	// Give Python time to start
 	time.Sleep(100 * time.Millisecond)
