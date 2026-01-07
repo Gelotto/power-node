@@ -600,10 +600,10 @@ func TestMalformedJSONParsing(t *testing.T) {
 		err := json.Unmarshal([]byte(jsonStr), &resp)
 
 		// Some malformed JSON will error, some will just have zero values
-		// The important thing is we don't panic
-		if err == nil && resp.Result == nil && resp.Error == nil && resp.ID == 0 {
-			// This is expected for some malformed JSON
-		}
+		// The important thing is we don't panic - we just need to verify
+		// the unmarshal completes without crashing
+		_ = err
+		_ = resp
 	}
 }
 

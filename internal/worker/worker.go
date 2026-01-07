@@ -396,7 +396,7 @@ func (w *Worker) restartPythonWithModel(modelName string) error {
 	// Safety: ensure old executor is fully stopped (defensive)
 	if w.pythonExec != nil {
 		log.Println("Cleaning up old Python executor...")
-		w.pythonExec.Stop()
+		_ = w.pythonExec.Stop()
 		w.pythonExec = nil
 	}
 
@@ -572,7 +572,7 @@ func (w *Worker) loadModel(ctx context.Context, modelName string) error {
 	w.pythonMu.Lock()
 	if w.pythonExec != nil {
 		log.Println("Unloading current model...")
-		w.pythonExec.Stop()
+		_ = w.pythonExec.Stop()
 		w.pythonExec = nil
 		w.pythonRunning = false
 	}
@@ -590,16 +590,6 @@ func (w *Worker) loadModel(ctx context.Context, modelName string) error {
 
 	log.Printf("Model %s loaded successfully", modelName)
 	return nil
-}
-
-// getActiveModel returns the currently loaded model name (thread-safe)
-func (w *Worker) getActiveModel() string {
-	w.activeModelMu.RLock()
-	defer w.activeModelMu.RUnlock()
-	if w.activeModel != nil {
-		return *w.activeModel
-	}
-	return ""
 }
 
 // supportsModel checks if this worker supports the given model

@@ -54,7 +54,7 @@ func TestShutdown_ClosesStopChannel(t *testing.T) {
 		close(stopped)
 	}()
 
-	worker.Stop()
+	_ = worker.Stop()
 
 	// Stop channel should be closed
 	select {
@@ -76,7 +76,7 @@ func TestShutdown_ClearsExecutorReference(t *testing.T) {
 		t.Fatal("Executor should be set before Stop")
 	}
 
-	worker.Stop()
+	_ = worker.Stop()
 
 	if worker.pythonExec != nil {
 		t.Error("Executor should be nil after Stop")
@@ -91,7 +91,7 @@ func TestShutdown_ClearsPythonRunningFlag(t *testing.T) {
 	worker := createTestWorker(mockServer, mockExecutor)
 	worker.pythonRunning = true
 
-	worker.Stop()
+	_ = worker.Stop()
 
 	if worker.pythonRunning {
 		t.Error("pythonRunning should be false after Stop")
@@ -154,7 +154,7 @@ func TestShutdown_JobLoopStops(t *testing.T) {
 	// Start job loop in background
 	loopDone := make(chan struct{})
 	go func() {
-		worker.jobLoop(ctx)
+		_ = worker.jobLoop(ctx)
 		close(loopDone)
 	}()
 
@@ -197,7 +197,7 @@ func TestShutdown_JobLoopStopsOnContext(t *testing.T) {
 	// Start job loop in background
 	loopDone := make(chan struct{})
 	go func() {
-		worker.jobLoop(ctx)
+		_ = worker.jobLoop(ctx)
 		close(loopDone)
 	}()
 
@@ -323,7 +323,7 @@ func TestShutdown_ResourceCleanup(t *testing.T) {
 		t.Fatal("pythonRunning should be true before shutdown")
 	}
 
-	worker.Stop()
+	_ = worker.Stop()
 
 	// Verify cleanup
 	if worker.pythonExec != nil {
