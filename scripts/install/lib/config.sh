@@ -59,10 +59,10 @@ generate_config() {
         api_key="$existing_api_key"
     fi
 
-    # Build worker section with optional id
-    local worker_id_line=""
+    # Use existing worker ID or placeholder
+    local worker_id="\${POWER_NODE_WORKER_ID}"
     if [ -n "$existing_worker_id" ] && [[ "$existing_worker_id" =~ ^[0-9a-f-]{36}$ ]]; then
-        worker_id_line=$'\n  id: '"$existing_worker_id"
+        worker_id="$existing_worker_id"
     fi
 
     cat > "$INSTALL_DIR/config/config.yaml" << EOF
@@ -73,7 +73,8 @@ api:
   url: $API_URL
   key: "$api_key"
 
-worker:${worker_id_line}
+worker:
+  id: "$worker_id"
   heartbeat_interval: 30s
   job_timeout: 5m
 
