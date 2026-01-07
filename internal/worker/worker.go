@@ -41,9 +41,11 @@ type Worker struct {
 	// Face-swap capability
 	supportsFaceSwap bool
 	// Multi-model support
-	supportedModels []string     // All models this worker has installed
-	activeModel     *string      // Currently loaded model (nil = none)
-	activeModelMu   sync.RWMutex // Protects activeModel
+	supportedModels    []string     // All models this worker has installed
+	activeModel        *string      // Currently loaded model (nil = none)
+	activeModelMu      sync.RWMutex // Protects activeModel
+	lastInferenceTime  time.Time    // Time of last inference (for idle timeout)
+	lastInferenceTimeMu sync.RWMutex
 }
 
 // NewWorker creates a new worker
@@ -146,6 +148,8 @@ func (w *Worker) Start(ctx context.Context) error {
 		w.activeModelMu.Lock()
 		w.activeModel = &initialModel
 		w.activeModelMu.Unlock()
+		// Initialize last inference time for idle timeout tracking
+		w.updateLastInferenceTime()
 		log.Printf("Active model: %s", initialModel)
 	}
 
@@ -173,6 +177,10 @@ func (w *Worker) jobLoop(ctx context.Context) error {
 	ticker := time.NewTicker(w.config.Worker.PollInterval)
 	defer ticker.Stop()
 
+	// Idle timeout check ticker (every 30 seconds)
+	idleCheckTicker := time.NewTicker(30 * time.Second)
+	defer idleCheckTicker.Stop()
+
 	log.Printf("Starting job loop (polling every %v)...", w.config.Worker.PollInterval)
 
 	for {
@@ -184,6 +192,10 @@ func (w *Worker) jobLoop(ctx context.Context) error {
 		case <-w.stopChan:
 			log.Println("Stop signal received, stopping job loop...")
 			return nil
+
+		// Check for idle timeout on model
+		case <-idleCheckTicker.C:
+			w.checkIdleTimeout()
 
 		// Handle pause signal from GPU monitor
 		case <-w.getPauseChan():
@@ -272,6 +284,79 @@ func (w *Worker) setProcessingJob(processing bool) {
 	w.processingJobMu.Lock()
 	w.processingJob = processing
 	w.processingJobMu.Unlock()
+}
+
+// updateLastInferenceTime updates the time of the last inference
+func (w *Worker) updateLastInferenceTime() {
+	w.lastInferenceTimeMu.Lock()
+	w.lastInferenceTime = time.Now()
+	w.lastInferenceTimeMu.Unlock()
+}
+
+// getLastInferenceTime gets the time of the last inference
+func (w *Worker) getLastInferenceTime() time.Time {
+	w.lastInferenceTimeMu.RLock()
+	defer w.lastInferenceTimeMu.RUnlock()
+	return w.lastInferenceTime
+}
+
+// checkIdleTimeout checks if the model should be unloaded due to idle timeout
+func (w *Worker) checkIdleTimeout() {
+	idleTimeout := w.config.Models.IdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 5 * time.Minute // Default 5 minutes
+	}
+
+	// Skip if not in multi-model mode or no model loaded
+	if !w.config.IsMultiModel() {
+		return
+	}
+
+	w.activeModelMu.RLock()
+	hasModel := w.activeModel != nil
+	w.activeModelMu.RUnlock()
+	if !hasModel {
+		return
+	}
+
+	lastInference := w.getLastInferenceTime()
+	if lastInference.IsZero() {
+		return
+	}
+
+	// Check if idle for too long
+	idleDuration := time.Since(lastInference)
+	if idleDuration > idleTimeout {
+		log.Printf("Model idle for %v (timeout: %v) - unloading to free VRAM", idleDuration.Round(time.Second), idleTimeout)
+		w.unloadIdleModel()
+	}
+}
+
+// unloadIdleModel unloads the current model to free VRAM
+func (w *Worker) unloadIdleModel() {
+	// Skip if processing a job
+	if w.isProcessingJob() {
+		return
+	}
+
+	w.pythonMu.Lock()
+	defer w.pythonMu.Unlock()
+
+	if w.pythonExec != nil && w.pythonRunning {
+		log.Println("Unloading model due to idle timeout...")
+		if err := w.pythonExec.Stop(); err != nil {
+			log.Printf("Error stopping Python during idle unload: %v", err)
+		}
+		w.pythonExec = nil
+		w.pythonRunning = false
+
+		// Clear active model
+		w.activeModelMu.Lock()
+		w.activeModel = nil
+		w.activeModelMu.Unlock()
+
+		log.Println("Model unloaded - VRAM freed (will reload on next job)")
+	}
 }
 
 // stopPythonForPause stops Python to free VRAM, waiting for current job to finish
@@ -517,6 +602,16 @@ func (w *Worker) getActiveModel() string {
 	return ""
 }
 
+// supportsModel checks if this worker supports the given model
+func (w *Worker) supportsModel(modelName string) bool {
+	for _, m := range w.supportedModels {
+		if m == modelName {
+			return true
+		}
+	}
+	return false
+}
+
 // processJob processes a single job (routes to image, video, or face-swap processing)
 func (w *Worker) processJob(ctx context.Context, job *models.Job) {
 	// Track that we're processing a job (for pause coordination)
@@ -565,14 +660,35 @@ func (w *Worker) processImageJob(ctx context.Context, job *models.Job) {
 	}
 
 	// Multi-model support: load the required model if not already active
+	// If required model fails, try to fall back to z-image-turbo (if different and supported)
+	usedModel := requiredModel
 	if err := w.loadModel(ctx, requiredModel); err != nil {
-		errMsg := fmt.Sprintf("failed to load model %s: %v", requiredModel, err)
-		log.Printf("Rejecting job %s: %s", job.ID, errMsg)
-		if err := w.apiClient.FailJob(ctx, w.id, job.ID, errMsg); err != nil {
-			log.Printf("Failed to report model load failure for job %s: %v", job.ID, err)
+		log.Printf("Warning: failed to load model %s: %v", requiredModel, err)
+
+		// Try fallback to z-image-turbo if we requested something else
+		fallbackModel := "z-image-turbo"
+		if requiredModel != fallbackModel && w.supportsModel(fallbackModel) {
+			log.Printf("Attempting fallback to %s...", fallbackModel)
+			if fallbackErr := w.loadModel(ctx, fallbackModel); fallbackErr != nil {
+				errMsg := fmt.Sprintf("failed to load model %s (fallback also failed: %v)", requiredModel, fallbackErr)
+				log.Printf("Rejecting job %s: %s", job.ID, errMsg)
+				if err := w.apiClient.FailJob(ctx, w.id, job.ID, errMsg); err != nil {
+					log.Printf("Failed to report model load failure for job %s: %v", job.ID, err)
+				}
+				return
+			}
+			log.Printf("Fallback to %s succeeded - proceeding with job", fallbackModel)
+			usedModel = fallbackModel
+		} else {
+			errMsg := fmt.Sprintf("failed to load model %s: %v", requiredModel, err)
+			log.Printf("Rejecting job %s: %s", job.ID, errMsg)
+			if err := w.apiClient.FailJob(ctx, w.id, job.ID, errMsg); err != nil {
+				log.Printf("Failed to report model load failure for job %s: %v", job.ID, err)
+			}
+			return
 		}
-		return
 	}
+	_ = usedModel // For future logging/metrics if needed
 
 	if err := w.apiClient.StartProcessing(ctx, w.id, job.ID); err != nil {
 		log.Printf("Failed to notify processing start for job %s: %v", job.ID, err)
@@ -605,6 +721,9 @@ func (w *Worker) processImageJob(ctx context.Context, job *models.Job) {
 		log.Printf("Failed to complete job %s: %v", job.ID, err)
 		return
 	}
+
+	// Update last inference time for idle timeout tracking
+	w.updateLastInferenceTime()
 
 	log.Printf("Image job %s completed successfully!", job.ID)
 }
@@ -707,6 +826,9 @@ func (w *Worker) processVideoJob(ctx context.Context, job *models.Job) {
 		return
 	}
 
+	// Update last inference time for idle timeout tracking
+	w.updateLastInferenceTime()
+
 	log.Printf("Video job %s completed successfully!", job.ID)
 }
 
@@ -776,6 +898,9 @@ func (w *Worker) processFaceSwapJob(ctx context.Context, job *models.Job) {
 		log.Printf("Failed to complete job %s: %v", job.ID, err)
 		return
 	}
+
+	// Update last inference time for idle timeout tracking
+	w.updateLastInferenceTime()
 
 	log.Printf("Face-swap job %s completed successfully!", job.ID)
 }
