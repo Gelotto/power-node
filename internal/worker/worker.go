@@ -232,11 +232,18 @@ func (w *Worker) jobLoop(ctx context.Context) error {
 				continue
 			}
 
-			// Skip claiming if Python not running (safety check)
+			// Skip claiming only if Python crashed (should be running but isn't)
+			// If no active model, Python was intentionally unloaded via idle timeout - allow claiming
 			w.pythonMu.Lock()
 			running := w.pythonRunning
 			w.pythonMu.Unlock()
-			if !running {
+
+			w.activeModelMu.RLock()
+			hasActiveModel := w.activeModel != nil
+			w.activeModelMu.RUnlock()
+
+			if hasActiveModel && !running {
+				// Python crashed while model should be loaded - skip claiming
 				continue
 			}
 
