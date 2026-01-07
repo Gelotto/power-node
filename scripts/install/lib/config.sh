@@ -87,6 +87,7 @@ gpu:
   compute_cap: "${COMPUTE_CAP:0:1}.${COMPUTE_CAP:1}"
 
 python:
+  executable: $INSTALL_DIR/venv/bin/python
   venv_path: $INSTALL_DIR/venv
   script_path: $script_path
   script_args:
